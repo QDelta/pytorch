@@ -538,10 +538,15 @@ class BaseSchedulerNode:
             # default to no reordering based on runtime
             return 0
 
+        if not dtype.is_floating_point:
+            # Heuristic doesn't handle integer ops
+            return 0
+
         try:
             gpu_memory_bandwidth = get_gpu_dram_gbps()
             gpu_flops = get_device_tflops(dtype) * 10**12
         except Exception:
+            log.exception("Could not get gpu speeds to estimate runtime")
             return 0
 
         if isinstance(self, ExternKernelSchedulerNode):
