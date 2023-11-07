@@ -1,8 +1,6 @@
 import contextlib
-import sys
-from enum import IntEnum
 
-from typing import Union
+from typing import Optional, Union
 
 import torch
 
@@ -22,6 +20,8 @@ __all__ = [
     "mem_efficient_sdp_enabled",
     "math_sdp_enabled",
     "enable_math_sdp",
+    "can_use_flash_attention",
+    "can_use_efficient_attention",
     "sdp_kernel",
 ]
 
@@ -200,18 +200,10 @@ def preferred_linalg_library(
     return torch._C._get_linalg_preferred_backend()
 
 
-class SDPBackend(IntEnum):
-    r"""Enum class for the scaled dot product attention backends.
+from torch._C import _SDPAParams as SDPAParams, _SDPBackend as SDPBackend
 
-    .. warning:: This class is in beta and subject to change.
-
-    This class needs to stay aligned with the enum defined in:
-    pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h
-    """
-    ERROR = -1
-    MATH = 0
-    FLASH_ATTENTION = 1
-    EFFICIENT_ATTENTION = 2
+# Set the __module__ attribute
+SDPBackend.__module__ = "torch.backends.cuda"
 
 
 def flash_sdp_enabled():
@@ -266,6 +258,30 @@ def enable_math_sdp(enabled: bool):
     Enables or disables math scaled dot product attention.
     """
     torch._C._set_sdp_use_math(enabled)
+
+
+def can_use_flash_attention(params: SDPAParams, debug: bool = False) -> bool:
+    """Returns whether the given params can be used with flash attention.
+
+    Args:
+        params: The parameters to test.
+        debug: Whether to print debug information as to why FlashAttention could not be run.
+            Defaults to False.
+    """
+    # TODO this is dumb but makes developing easier for now
+    return torch._C._can_use_flash_attention(params, debug)
+
+
+def can_use_efficient_attention(params: SDPAParams, debug: bool = False) -> bool:
+    """Returns whether the given params can be used with efficient_attention.
+
+    Args:
+        params: The parameters to test.
+        debug (bool, optional): Whether to print debug information as to why FlashAttention could not be run.
+            Defaults to False.
+    """
+    # TODO this is dumb but makes developing easier for now
+    return torch._C._can_use_mem_efficient_attention(params, debug)
 
 
 @contextlib.contextmanager
