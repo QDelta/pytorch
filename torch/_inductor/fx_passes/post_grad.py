@@ -43,6 +43,7 @@ from .group_batch_fusion import group_batch_fusion_post_grad_passes
 log = logging.getLogger(__name__)
 aten = torch.ops.aten
 prims = torch.ops.prims
+c10d_functional = torch.ops._c10d_functional
 
 # First pass_patterns[0] are applied, then [1], then [2]
 pass_patterns = [
@@ -92,7 +93,7 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
     fake_tensor_updater.incremental_update()
     # Keep this last, since it introduces mutation. Look at
     # ./fx_passes/README.md for a discussion of mutation invariants.
-    reinplace_scatters(gm.graph)
+    reinplace_inplaceable_ops(gm.graph)
     gm.recompile()
     gm.graph.lint()
 
@@ -624,11 +625,11 @@ def remove_noop_ops(graph: torch.fx.Graph):
 InplaceableOp = namedtuple("InplaceableOp", ["inplace_op", "mutated_arg"])
 
 
-def reinplace_scatters(graph):
+def reinplace_inplaceable_ops(graph):
     """
-    Reinplaces scatter operations in easy cases where the node being mutated
-    is only used by the scatter (users == 1), and the node being mutated
-    shares storage with no other nodes.
+    Reinplaces in-placeable ops in easy cases where the node being mutated is
+    only used by the op (users == 1), and the node being mutated shares storage
+    with no other nodes.
 
     Also handles input mutations when there is a corresponding copy node.
     """
@@ -654,6 +655,9 @@ def reinplace_scatters(graph):
             mutated_inputs.add(node.args[0])
 
     def can_inplace(node, mutated_arg):
+        if isinstance(mutated_arg, (list, tuple)):
+            return all(can_inplace(node, arg) for arg in mutated_arg)
+
         if get_node_storage(mutated_arg) is None:
             return False
         shared_view_nodes = storage_to_nodes[get_node_storage(mutated_arg)]
@@ -670,7 +674,6 @@ def reinplace_scatters(graph):
             if len(mutated_arg.users) > 2:
                 return False
 
-            graph.erase_node(copy_node)
             return True
         else:
             # NB: This condition could be relaxed if none of the aliases
@@ -686,12 +689,25 @@ def reinplace_scatters(graph):
         aten._unsafe_index_put.default: InplaceableOp(
             inductor_prims._unsafe_index_put_, 0
         ),
+        c10d_functional.all_reduce.default: InplaceableOp(
+            c10d_functional.all_reduce_.default, 0
+        ),
+        c10d_functional.all_reduce_coalesced.default: InplaceableOp(
+            c10d_functional.all_reduce_coalesced_.default, 0
+        ),
     }
     inplaceable_triton_ops = {triton_kernel_wrapper_functional}
 
     for node in graph.nodes:
         if (inplaceable_op := inplaceable_ops.get(node.target, None)) is not None:
-            if can_inplace(node, node.args[inplaceable_op.mutated_arg]):
+            mutated_arg = node.args[inplaceable_op.mutated_arg]
+            if can_inplace(node, mutated_arg):
+                # TODO(yifu): this doesn't properly remove copy epilogues for
+                # ops that mutate multiple inputs. Need to revise the copy
+                # node tracking logic to support the case.
+                copy_node = copy_args_to_copy_nodes.get((mutated_arg, node))
+                if copy_node is not None:
+                    graph.erase_node(copy_node)
                 node.target = inplaceable_op.inplace_op
         elif node.target in inplaceable_triton_ops:
             # inplaceable_triton_ops take an additional argument called
