@@ -694,6 +694,119 @@ void disableExecutionGraphObserver() {
         << "Trying to disable Execution Graph Observer when it's already disabled.";
   }
 }
+
+void writeOneFunction(
+    std::ofstream& out,
+    const char* name,
+    const std::vector<std::string>& shapes,
+    const std::vector<std::string>& types,
+    const std::vector<std::string>& devices) {
+  out << "{" << std::endl;
+  out << "  name: " << name << std::endl;
+  out << "  shapes: " << vectorToString(shapes) << std::endl;
+  out << "  types: " << vectorToString(types) << std::endl;
+  out << "  devices: " << vectorToString(devices) << std::endl;
+  out << "}" << std::endl;
+}
+
+void getTensorInfos(const c10::IValue& val,
+    std::vector<std::string>& shapes,
+    std::vector<std::string>& types,
+    std::vector<std::string>& devices) {
+  if (val.isTensor()) {
+    auto tensor = val.toTensor();
+    shapes.emplace_back(vectorToString(tensor.sizes().vec()));
+    types.emplace_back(tensor.dtype().name());
+    devices.emplace_back(tensor.device().str());
+  } else if (val.isTuple()) {
+    const auto& val_container = val.toTupleRef().elements();
+    for (const auto& v : val_container) {
+      getTensorInfos(v, shapes, types, devices);
+    }
+  } else if (val.isList()) {
+    const auto& val_list = val.toList();
+    for (const auto i: c10::irange(val_list.size())) {
+      getTensorInfos(val_list.get(i), shapes, types, devices);
+    }
+  }
+}
+
+struct TORCH_API FunctionTracer {
+  std::string output_file_name{};
+  std::ofstream out{};
+  std::mutex g_mutex{};
+  CallbackHandle cb_handle{INVALID_CALLBACK_HANDLE};
+  int32_t pid{-1};
+
+  FunctionTracer() = default;
+};
+
+using TracerManager = GlobalStateManager<FunctionTracer>;
+
+std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn) {
+  auto tracer = TracerManager::get();
+  if (tracer != nullptr) {
+    try {
+      const std::lock_guard<std::mutex> lock(tracer->g_mutex);
+
+      auto num_inputs = fn.num_inputs();
+      const auto inputs = fn.inputs();
+      TORCH_INTERNAL_ASSERT(num_inputs <= inputs.size());
+
+      std::vector<std::string> input_shapes;
+      std::vector<std::string> input_types;
+      std::vector<std::string> input_devices;
+
+      for (const auto i : c10::irange(inputs.size() - num_inputs, inputs.size())) {
+        getTensorInfos(inputs[i], input_shapes, input_types, input_devices);
+      }
+
+      writeOneFunction(
+          tracer->out,
+          fn.name(),
+          input_shapes,
+          input_types,
+          input_devices);
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "Exception in function tracer: " << e.what();
+    }
+  }
+  return nullptr;
+}
+
+void tracerOnFunctionExit(const RecordFunction& fn, ObserverContext* ctx_ptr) { }
+
+void enableFunctionTracer(const std::string& output_file_path) {
+  auto tracer = TracerManager::get();
+  if (tracer == nullptr) {
+    TracerManager::push(std::make_shared<FunctionTracer>());
+    tracer = TracerManager::get();
+  } else if (tracer->cb_handle != INVALID_CALLBACK_HANDLE) {
+    LOG(WARNING) << "Function tracer was already enabled.";
+    return;
+  }
+  tracer->pid = processId();
+  tracer->output_file_name = output_file_path;
+  tracer->out = openOutputFile(output_file_path);
+
+  tracer->cb_handle = addGlobalCallback(
+      RecordFunctionCallback(&tracerOnFunctionEnter, &tracerOnFunctionExit)
+          .needsInputs(true)
+          .needsOutputs(true)
+          .needsIds(true));
+}
+
+void disableFunctionTracer() {
+  auto tracer = TracerManager::get();
+  if (tracer != nullptr) {
+    tracer->out.close();
+    removeCallback(tracer->cb_handle);
+    tracer->cb_handle = INVALID_CALLBACK_HANDLE;
+  } else {
+    LOG(WARNING) << "Function tracer was not enabled.";
+  }
+}
+
 } // namespace impl
 } // namespace profiler
 } // namespace torch

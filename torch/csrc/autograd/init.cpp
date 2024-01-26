@@ -238,6 +238,14 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
       "_disable_execution_graph_observer",
       &torch::profiler::impl::disableExecutionGraphObserver);
 
+  m.def(
+      "_enable_function_tracer",
+      &torch::profiler::impl::enableFunctionTracer,
+      py::arg("output_file_name"));
+  m.def(
+      "_disable_function_tracer",
+      &torch::profiler::impl::disableFunctionTracer);
+
   // NOTICE: These record functions are not torch operators and may not show up
   // in TorchScript tracing, FX transforms, or operator serialization. For these
   // use cases, please use `torch.profiler.record_function`.
