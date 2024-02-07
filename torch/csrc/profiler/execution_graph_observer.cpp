@@ -9,6 +9,9 @@
 #include <unistd.h>
 #endif // _WIN32
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #include <fmt/format.h>
 #include <algorithm>
 #include <chrono>
@@ -695,18 +698,27 @@ void disableExecutionGraphObserver() {
   }
 }
 
-void writeOneFunction(
-    std::ofstream& out,
+void sendOneFunction(
+    int simulator_sock_fd,
+    size_t id, size_t parent,
     const char* name,
     const std::vector<std::string>& shapes,
     const std::vector<std::string>& types,
     const std::vector<std::string>& devices) {
-  out << "{" << std::endl;
-  out << "  name: " << name << std::endl;
-  out << "  shapes: " << vectorToString(shapes) << std::endl;
-  out << "  types: " << vectorToString(types) << std::endl;
-  out << "  devices: " << vectorToString(devices) << std::endl;
-  out << "}" << std::endl;
+  std::ostringstream out;
+  out << "{";
+  out << "\"id\":" << id << "," << "\"parent\":" << parent << ",";
+  out << "\"name\":\"" << name << "\",";
+  out << "\"shapes\":" << vectorToString(shapes) << ",";
+  out << "\"types\":" << vectorToString(types) << ",";
+  out << "\"devices\":" << vectorToString(devices);
+  out << "}\x02"; // tag for torch call message
+
+  std::string info = out.str();
+  int ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
+  if (ret < 0) {
+    LOG(WARNING) << "Failed to send function info to simulator: " << strerror(errno);
+  }
 }
 
 void getTensorInfos(const c10::IValue& val,
@@ -716,8 +728,8 @@ void getTensorInfos(const c10::IValue& val,
   if (val.isTensor()) {
     auto tensor = val.toTensor();
     shapes.emplace_back(vectorToString(tensor.sizes().vec()));
-    types.emplace_back(tensor.dtype().name());
-    devices.emplace_back(tensor.device().str());
+    types.emplace_back("\"" + std::string(tensor.dtype().name()) + "\"");
+    devices.emplace_back("\"" + tensor.device().str() + "\"");
   } else if (val.isTuple()) {
     const auto& val_container = val.toTupleRef().elements();
     for (const auto& v : val_container) {
@@ -732,11 +744,12 @@ void getTensorInfos(const c10::IValue& val,
 }
 
 struct TORCH_API FunctionTracer {
-  std::string output_file_name{};
-  std::ofstream out{};
+  int simulator_sock_fd{-1};
   std::mutex g_mutex{};
   CallbackHandle cb_handle{INVALID_CALLBACK_HANDLE};
   int32_t pid{-1};
+  size_t next_id{1};
+  std::stack<size_t> call_stack{};
 
   FunctionTracer() = default;
 };
@@ -761,22 +774,37 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
         getTensorInfos(inputs[i], input_shapes, input_types, input_devices);
       }
 
-      writeOneFunction(
-          tracer->out,
+      size_t id = tracer->next_id++;
+      size_t parent = tracer->call_stack.top();
+      tracer->call_stack.push(id);
+
+      sendOneFunction(
+          tracer->simulator_sock_fd,
+          id, parent,
           fn.name(),
           input_shapes,
           input_types,
           input_devices);
     } catch (const std::exception& e) {
-      LOG(WARNING) << "Exception in function tracer: " << e.what();
+      LOG(WARNING) << "Exception in function tracer (enter): " << e.what();
     }
   }
   return nullptr;
 }
 
-void tracerOnFunctionExit(const RecordFunction& fn, ObserverContext* ctx_ptr) { }
+void tracerOnFunctionExit(const RecordFunction& fn, ObserverContext* ctx_ptr) {
+  auto tracer = TracerManager::get();
+  if (tracer != nullptr) {
+    try {
+      const std::lock_guard<std::mutex> lock(tracer->g_mutex);
+      tracer->call_stack.pop();
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "Exception in function tracer (exit): " << e.what();
+    }
+  }
+}
 
-void enableFunctionTracer(const std::string& output_file_path) {
+void enableFunctionTracer(const std::string& simulator_sock_path) {
   auto tracer = TracerManager::get();
   if (tracer == nullptr) {
     TracerManager::push(std::make_shared<FunctionTracer>());
@@ -786,8 +814,19 @@ void enableFunctionTracer(const std::string& output_file_path) {
     return;
   }
   tracer->pid = processId();
-  tracer->output_file_name = output_file_path;
-  tracer->out = openOutputFile(output_file_path);
+  tracer->call_stack.push(0);
+
+  int sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+  auto simulator_addr = (sockaddr_un*)malloc(sizeof(sockaddr_un));
+  simulator_addr->sun_family = AF_UNIX;
+  strncpy(simulator_addr->sun_path, simulator_sock_path.c_str(), sizeof(simulator_addr->sun_path) - 1);
+  int ret = connect(sock_fd, (sockaddr*)simulator_addr, sizeof(sockaddr_un));
+  if (ret < 0) {
+    LOG(WARNING) << "Failed to connect to simulator: " << strerror(errno);
+    return;
+  }
+  free(simulator_addr);
+  tracer->simulator_sock_fd = sock_fd;
 
   tracer->cb_handle = addGlobalCallback(
       RecordFunctionCallback(&tracerOnFunctionEnter, &tracerOnFunctionExit)
@@ -799,7 +838,7 @@ void enableFunctionTracer(const std::string& output_file_path) {
 void disableFunctionTracer() {
   auto tracer = TracerManager::get();
   if (tracer != nullptr) {
-    tracer->out.close();
+    close(tracer->simulator_sock_fd);
     removeCallback(tracer->cb_handle);
     tracer->cb_handle = INVALID_CALLBACK_HANDLE;
   } else {

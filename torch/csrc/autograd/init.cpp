@@ -241,7 +241,7 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
   m.def(
       "_enable_function_tracer",
       &torch::profiler::impl::enableFunctionTracer,
-      py::arg("output_file_name"));
+      py::arg("simulator_socket_path"));
   m.def(
       "_disable_function_tracer",
       &torch::profiler::impl::disableFunctionTracer);
