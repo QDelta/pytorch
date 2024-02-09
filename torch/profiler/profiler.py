@@ -14,12 +14,14 @@ from torch._C._autograd import (
     _remove_execution_graph_observer,
     _enable_execution_graph_observer,
     _disable_execution_graph_observer,
+    _enable_function_tracer,
+    _disable_function_tracer,
 )
 from torch._C._profiler import _ExperimentalConfig
 from torch.autograd import ProfilerActivity, kineto_available
 
 __all__ = ['supported_activities', 'ProfilerAction', 'schedule', 'tensorboard_trace_handler', 'profile',
-           'ExecutionGraphObserver']
+           'ExecutionGraphObserver', 'enable_function_tracer', 'disable_function_tracer']
 
 def supported_activities():
     """
@@ -582,3 +584,9 @@ class ExecutionGraphObserver:
         Returns the output file name.
         """
         return self._output_file_path
+
+def enable_function_tracer(simulator_socket_path: str) -> None:
+    _enable_function_tracer(simulator_socket_path)
+
+def disable_function_tracer() -> None:
+    _disable_function_tracer()
