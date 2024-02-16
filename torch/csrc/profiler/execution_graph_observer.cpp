@@ -11,6 +11,7 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <dlfcn.h>
 
 #include <fmt/format.h>
 #include <algorithm>
@@ -698,48 +699,77 @@ void disableExecutionGraphObserver() {
   }
 }
 
-void sendOneFunction(
-    int simulator_sock_fd,
-    size_t id, size_t parent,
-    const char* name,
-    const std::vector<std::string>& shapes,
-    const std::vector<std::string>& types,
-    const std::vector<std::string>& devices) {
-  std::ostringstream out;
-  out << "{";
-  out << "\"id\":" << id << "," << "\"parent\":" << parent << ",";
-  out << "\"name\":\"" << name << "\",";
-  out << "\"shapes\":" << vectorToString(shapes) << ",";
-  out << "\"types\":" << vectorToString(types) << ",";
-  out << "\"devices\":" << vectorToString(devices);
-  out << "}\x02"; // tag for torch call message
-
-  std::string info = out.str();
-  int ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
-  if (ret < 0) {
-    LOG(WARNING) << "Failed to send function info to simulator: " << strerror(errno);
+inline c10::optional<std::string> jsonIValue(
+  const c10::IValue& val,
+  const size_t maxArrayLen = maxNumElements) {
+  if (val.isTensor()) {
+    const auto t = val.toTensor();
+    auto shape = vectorToString(t.sizes().vec());
+    auto dtype = std::string(t.dtype().name());
+    auto device = t.device().str();
+    return fmt::format("{{\"type\":\"Tensor\",\"shape\":{},\"dtype\":\"{}\",\"device\":\"{}\"}}", shape, dtype, device);
+  } else if (val.isTuple()) {
+    std::vector<std::string> element_jsons;
+    const auto& elements = val.toTupleRef().elements();
+    for (const auto j: c10::irange(elements.size())) {
+      const auto e_json = jsonIValue(elements[j], maxArrayLen);
+      if (e_json.has_value()) {
+        element_jsons.emplace_back(e_json.value());
+      }
+    }
+    return fmt::format("{{\"type\":\"Tuple\",\"elements\":{}}}", vectorToString(element_jsons));
+  } else if (val.isList()) {
+    std::vector<std::string> element_jsons;
+    const auto& elements = val.toList();
+    for (const auto j: c10::irange(elements.size())) {
+      const auto e_json = jsonIValue(elements.get(j), maxArrayLen);
+      if (e_json.has_value()) {
+        element_jsons.emplace_back(e_json.value());
+      }
+      if (j >= maxArrayLen) {
+        LOG(WARNING) << "list size=" << elements.size()
+                     << " exceeded maxArrayLen=" << maxArrayLen;
+        break;
+      }
+    }
+    return fmt::format("{{\"type\":\"List\",\"elements\":{}}}", vectorToString(element_jsons));
+  } else if (val.isDouble()) {
+    double d_val = val.toDouble();
+    if (std::isinf(d_val) || std::isnan(d_val)) {
+      return fmt::format("{{\"type\":\"Double\",\"value\":\"{}\"}}", std::to_string(d_val));
+    } else {
+      return fmt::format("{{\"type\":\"Double\",\"value\":{}}}", std::to_string(d_val));  
+    }
+  } else if (val.isInt()) {
+    return fmt::format("{{\"type\":\"Int\",\"value\":{}}}", val.toInt());
+  } else if (val.isBool()) {
+    return fmt::format("{{\"type\":\"Bool\",\"value\":{}}}", val.toBool() ? "true" : "false");
+  } else if (val.isString()) {
+    const std::string& str_val = val.toStringRef();
+    if (str_val.size() > maxArrayLen) {
+      LOG(WARNING) << "string size=" << str_val.size()
+                   << " exceeded maxArrayLen=" << maxArrayLen;
+      return fmt::format("{{\"type\":\"String\",\"value\":\"{}\"}}", str_val.substr(0, maxArrayLen));
+    }
+    return fmt::format("{{\"type\":\"String\",\"value\":\"{}\"}}", str_val);
+  } else if (val.isDevice()) {
+    return fmt::format("{{\"type\":\"Device\",\"value\":\"{}\"}}", val.toDevice().str());
   }
+  return c10::nullopt;
 }
 
-void getTensorInfos(const c10::IValue& val,
-    std::vector<std::string>& shapes,
-    std::vector<std::string>& types,
-    std::vector<std::string>& devices) {
-  if (val.isTensor()) {
-    auto tensor = val.toTensor();
-    shapes.emplace_back(vectorToString(tensor.sizes().vec()));
-    types.emplace_back("\"" + std::string(tensor.dtype().name()) + "\"");
-    devices.emplace_back("\"" + tensor.device().str() + "\"");
-  } else if (val.isTuple()) {
-    const auto& val_container = val.toTupleRef().elements();
-    for (const auto& v : val_container) {
-      getTensorInfos(v, shapes, types, devices);
-    }
-  } else if (val.isList()) {
-    const auto& val_list = val.toList();
-    for (const auto i: c10::irange(val_list.size())) {
-      getTensorInfos(val_list.get(i), shapes, types, devices);
-    }
+void sendOneCall(
+    int simulator_sock_fd,
+    size_t id, size_t parent,
+    long long cur_sim_nanos,
+    const char* name,
+    const std::vector<std::string>& args) {
+  // \x02 tag for torch call message
+  auto info = fmt::format("{{\"id\":{},\"parent\":{},\"cur\":{},\"name\":\"{}\",\"args\":{}}}\x02", id, parent, cur_sim_nanos, name, vectorToString(args));
+
+  int ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
+  if (ret < 0) {
+    LOG(WARNING) << "Failed to send torch call to simulator: " << strerror(errno);
   }
 }
 
@@ -750,6 +780,8 @@ struct TORCH_API FunctionTracer {
   int32_t pid{-1};
   size_t next_id{1};
   std::stack<size_t> call_stack{};
+  void* cudalib_handle{nullptr};
+  long long (*get_time_offset)(){nullptr};
 
   FunctionTracer() = default;
 };
@@ -762,29 +794,36 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
     try {
       const std::lock_guard<std::mutex> lock(tracer->g_mutex);
 
-      auto num_inputs = fn.num_inputs();
+      const auto num_inputs = fn.num_inputs();
       const auto inputs = fn.inputs();
-      TORCH_INTERNAL_ASSERT(num_inputs <= inputs.size());
+      const auto size_inputs = inputs.size();
+      std::vector<std::string> args;
 
-      std::vector<std::string> input_shapes;
-      std::vector<std::string> input_types;
-      std::vector<std::string> input_devices;
-
-      for (const auto i : c10::irange(inputs.size() - num_inputs, inputs.size())) {
-        getTensorInfos(inputs[i], input_shapes, input_types, input_devices);
+      if (num_inputs > size_inputs) {
+        LOG(WARNING) << "RecordFunction " << fn.name()
+                     << " expected num_inputs=" << num_inputs
+                     << " > inputs.size()=" << size_inputs;
+      } else {
+        for (const auto i : c10::irange(size_inputs - num_inputs, size_inputs)) {
+          const auto arg_json = jsonIValue(inputs[i]);
+          if (arg_json.has_value()) {
+            args.emplace_back(arg_json.value());
+          }
+        }
       }
 
       size_t id = tracer->next_id++;
       size_t parent = tracer->call_stack.top();
       tracer->call_stack.push(id);
 
-      sendOneFunction(
+      auto now = std::chrono::system_clock::now().time_since_epoch();
+      auto cur_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now);
+      auto cur_sim_nanos = cur_nanos.count() + tracer->get_time_offset();
+
+      sendOneCall(
           tracer->simulator_sock_fd,
-          id, parent,
-          fn.name(),
-          input_shapes,
-          input_types,
-          input_devices);
+          id, parent, cur_sim_nanos,
+          fn.name(), args);
     } catch (const std::exception& e) {
       LOG(WARNING) << "Exception in function tracer (enter): " << e.what();
     }
@@ -833,6 +872,19 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
           .needsInputs(true)
           .needsOutputs(true)
           .needsIds(true));
+  
+  auto cudalib_handle = dlopen("libcuda.so.1", RTLD_LAZY);
+  if (cudalib_handle == nullptr) {
+    LOG(WARNING) << "Failed to open libcuda.so.1: " << dlerror();
+  } else {
+    tracer->cudalib_handle = cudalib_handle;
+    auto get_time_offset = dlsym(cudalib_handle, "get_time_offset");
+    if (get_time_offset == nullptr) {
+      LOG(WARNING) << "Failed to find get_time_offset in libcuda.so.1: " << dlerror();
+    } else {
+      tracer->get_time_offset = (long long (*)())get_time_offset;
+    }
+  }
 }
 
 void disableFunctionTracer() {
@@ -841,6 +893,9 @@ void disableFunctionTracer() {
     close(tracer->simulator_sock_fd);
     removeCallback(tracer->cb_handle);
     tracer->cb_handle = INVALID_CALLBACK_HANDLE;
+    if (tracer->cudalib_handle != nullptr) {
+      dlclose(tracer->cudalib_handle);
+    }
   } else {
     LOG(WARNING) << "Function tracer was not enabled.";
   }
