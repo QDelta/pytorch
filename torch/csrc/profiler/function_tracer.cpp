@@ -1,4 +1,3 @@
-#include "c10/cuda/CUDAFunctions.h"
 #ifdef _WIN32
 #error "Not supported on Windows"
 #else
@@ -58,16 +57,23 @@ inline std::string concat(Args... args) {
   return os.str();
 }
 
-constexpr size_t maxNumElements = 4096;
+inline std::string deviceStr(const c10::Device &device) {
+  auto s = device.str();
+  if (s == "cuda") {
+    return "cuda:" + std::to_string(device.index());
+  } else {
+    return s;
+  }
+}
 
 inline c10::optional<std::string> jsonIValue(
   const c10::IValue& val,
-  const size_t maxArrayLen = maxNumElements) {
+  const size_t maxArrayLen = 4096) {
   if (val.isTensor()) {
     const auto t = val.toTensor();
     auto shape = vectorToString(t.sizes().vec());
     auto dtype = std::string(t.dtype().name());
-    auto device = t.device().str();
+    auto device = deviceStr(t.device());
     return concat("{",
       "\"type\":", "\"Tensor\",",
       "\"shape\":", shape, ",",
@@ -145,7 +151,7 @@ inline c10::optional<std::string> jsonIValue(
   } else if (val.isDevice()) {
     return concat("{",
       "\"type\":", "\"Device\",",
-      "\"value\":", "\"", val.toDevice().str(), "\"",
+      "\"value\":", "\"", deviceStr(val.toDevice()), "\"",
     "}");
   }
   return c10::nullopt;
@@ -154,7 +160,7 @@ inline c10::optional<std::string> jsonIValue(
 void sendOneCall(
     int simulator_sock_fd,
     size_t id, size_t parent,
-    long long cur_sim_nanos,
+    long cur_sim_time,
     const char* name,
     const std::vector<std::string>& args) {
   int device = at::cuda::current_device();
@@ -170,11 +176,12 @@ void sendOneCall(
   }
   // \x02 tag for torch call message
   auto info = concat("{",
+    "\"pid\":", getpid(), ",",
     "\"dev\":", device, ",",
     "\"stream\":", stream_id, ",",
     "\"id\":", id, ",",
     "\"parent\":", parent, ",",
-    "\"cur\":", cur_sim_nanos, ",",
+    "\"cur\":", cur_sim_time, ",",
     "\"name\":", "\"", name, "\",",
     "\"args\":", vectorToString(args),
   "}\x02");
@@ -189,7 +196,6 @@ struct TORCH_API FunctionTracer {
   int simulator_sock_fd{-1};
   std::mutex g_mutex{};
   CallbackHandle cb_handle{INVALID_CALLBACK_HANDLE};
-  int32_t pid{-1};
   size_t next_id{1};
   std::stack<size_t> call_stack{};
   void* cudalib_handle{nullptr};
@@ -229,12 +235,12 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
       tracer->call_stack.push(id);
 
       auto now = std::chrono::system_clock::now().time_since_epoch();
-      auto cur_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now);
-      auto cur_sim_nanos = cur_nanos.count() + tracer->get_time_offset();
+      auto cur_time = std::chrono::duration_cast<std::chrono::milliseconds>(now);
+      auto cur_sim_time = cur_time.count() + tracer->get_time_offset();
 
       sendOneCall(
           tracer->simulator_sock_fd,
-          id, parent, cur_sim_nanos,
+          id, parent, cur_sim_time,
           fn.name(), args);
     } catch (const std::exception& e) {
       LOG(WARNING) << "Exception in function tracer (enter): " << e.what();
@@ -264,7 +270,6 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
     LOG(WARNING) << "Function tracer was already enabled.";
     return;
   }
-  tracer->pid = getpid();
   tracer->call_stack.push(0);
 
   int sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
