@@ -20,10 +20,6 @@ TORCH_API void enableExecutionGraphObserver();
 // Disables execution graph observer.
 TORCH_API void disableExecutionGraphObserver();
 
-TORCH_API void enableFunctionTracer(const std::string& simulator_socket_path);
-
-TORCH_API void disableFunctionTracer();
-
 } // namespace impl
 } // namespace profiler
 } // namespace torch

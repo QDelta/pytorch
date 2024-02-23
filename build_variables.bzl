@@ -662,6 +662,7 @@ libtorch_cuda_core_sources = [
     "torch/csrc/cuda/memory_snapshot.cpp",
     "torch/csrc/jit/codegen/fuser/cuda/fused_kernel.cpp",
     "torch/csrc/profiler/cuda.cpp",
+    "torch/csrc/profiler/function_tracer.cpp",
     "torch/csrc/autograd/functions/comm.cpp",
     "torch/csrc/jit/codegen/cuda/arith.cpp",
     "torch/csrc/jit/codegen/cuda/compute_at.cpp",
