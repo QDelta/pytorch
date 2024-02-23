@@ -586,10 +586,10 @@ class ExecutionGraphObserver:
         return self._output_file_path
 
 def enable_function_tracer() -> None:
-    if os.environ.get('CUDASIM') is not None:
-        prefix = os.environ['CUDASIM_SOCKET_PREFIX']
+    if os.environ.get('DEEPSIM') is not None:
+        prefix = os.environ['DEEPSIM_SOCKET_PREFIX']
         _enable_function_tracer(prefix + ".simulator.sock")
 
 def disable_function_tracer() -> None:
-    if os.environ.get('CUDASIM') is not None:
+    if os.environ.get('DEEPSIM') is not None:
         _disable_function_tracer()
