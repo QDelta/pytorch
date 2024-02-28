@@ -60,7 +60,8 @@ inline std::string concat(Args... args) {
 inline std::string deviceStr(const c10::Device &device) {
   auto s = device.str();
   if (s == "cuda") {
-    return "cuda:" + std::to_string(device.index());
+    auto curr_dev = at::cuda::current_device();
+    return "cuda:" + std::to_string(curr_dev);
   } else {
     return s;
   }
@@ -157,28 +158,33 @@ inline c10::optional<std::string> jsonIValue(
   return c10::nullopt;
 }
 
+inline std::string jsonStream(cudaStream_t stream) {
+  struct deepsim_cudaStream {
+    int device;
+    int id;
+  };
+  if (stream) {
+    auto stream_ = (deepsim_cudaStream *)stream;
+    return concat("[",
+      stream_->device, ",",
+      stream_->id,
+    "]");
+  } else {
+    return "null";
+  }
+}
+
 void sendOneCall(
     int simulator_sock_fd,
     size_t id, size_t parent,
     long cur_sim_time,
     const char* name,
     const std::vector<std::string>& args) {
-  int device = at::cuda::current_device();
-  int stream_id = 0;
-  struct deepsim_cudaStream {
-    int device;
-    int id;
-  };
-  auto stream = (deepsim_cudaStream *)(at::cuda::getCurrentCUDAStream().stream());
-  if (stream) {
-    device = stream->device;
-    stream_id = stream->id;
-  }
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
   // \x02 tag for torch call message
   auto info = concat("{",
     "\"pid\":", getpid(), ",",
-    "\"dev\":", device, ",",
-    "\"stream\":", stream_id, ",",
+    "\"stream\":", jsonStream(stream), ",",
     "\"id\":", id, ",",
     "\"parent\":", parent, ",",
     "\"cur\":", cur_sim_time, ",",
@@ -199,7 +205,7 @@ struct TORCH_API FunctionTracer {
   size_t next_id{1};
   std::stack<size_t> call_stack{};
   void* cudalib_handle{nullptr};
-  long long (*get_time_offset)(){nullptr};
+  long (*get_time_offset)(){nullptr};
 
   FunctionTracer() = default;
 };
@@ -235,7 +241,7 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
       tracer->call_stack.push(id);
 
       auto now = std::chrono::system_clock::now().time_since_epoch();
-      auto cur_time = std::chrono::duration_cast<std::chrono::milliseconds>(now);
+      auto cur_time = std::chrono::duration_cast<std::chrono::microseconds>(now);
       auto cur_sim_time = cur_time.count() + tracer->get_time_offset();
 
       sendOneCall(
@@ -299,7 +305,7 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
     if (get_time_offset == nullptr) {
       LOG(WARNING) << "Failed to find get_time_offset in libcuda.so.1: " << dlerror();
     } else {
-      tracer->get_time_offset = (long long (*)())get_time_offset;
+      tracer->get_time_offset = (long (*)())get_time_offset;
     }
   }
 }
