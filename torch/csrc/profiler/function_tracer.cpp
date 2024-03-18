@@ -114,17 +114,20 @@ inline c10::optional<std::string> jsonIValue(
     "}");
   } else if (val.isDouble()) {
     double d_val = val.toDouble();
-    if (std::isinf(d_val) || std::isnan(d_val)) {
-      return concat("{",
-        "\"type\":", "\"Double\",",
-        "\"value\":", "\"", std::to_string(d_val), "\"",
-      "}");
-    } else { 
-      return concat("{",
-        "\"type\":", "\"Double\",",
-        "\"value\":", d_val,
-      "}");
+    if (std::isinf(d_val)) {
+      if (d_val > 0) {
+        d_val = std::numeric_limits<double>::max();
+      } else {
+        d_val = -std::numeric_limits<double>::max();
+      }
     }
+    if (std::isnan(d_val)) {
+      d_val = 0;
+    }
+    return concat("{",
+      "\"type\":", "\"Double\",",
+      "\"value\":", d_val,
+    "}");
   } else if (val.isInt()) {
     return concat("{",
       "\"type\":", "\"Int\",",
