@@ -162,12 +162,12 @@ inline c10::optional<std::string> jsonIValue(
 }
 
 inline std::string jsonStream(cudaStream_t stream) {
-  struct deepsim_cudaStream {
+  struct _cudaStream {
     int device;
     int id;
   };
   if (stream) {
-    auto stream_ = (deepsim_cudaStream *)stream;
+    auto stream_ = (_cudaStream *)stream;
     return concat("[",
       stream_->device, ",",
       stream_->id,
