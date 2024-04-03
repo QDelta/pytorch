@@ -72,15 +72,19 @@ inline c10::optional<std::string> jsonIValue(
   const size_t maxArrayLen = 4096) {
   if (val.isTensor()) {
     const auto t = val.toTensor();
-    auto shape = vectorToString(t.sizes().vec());
-    auto dtype = std::string(t.dtype().name());
-    auto device = deviceStr(t.device());
-    return concat("{",
-      "\"type\":", "\"Tensor\",",
-      "\"shape\":", shape, ",",
-      "\"dtype\":", "\"", dtype, "\",",
-      "\"device\":", "\"", device, "\"",
-    "}");
+    if (t.has_storage()) {
+      auto shape = vectorToString(t.sizes().vec());
+      auto dtype = t.dtype().toScalarType();
+      auto device = deviceStr(t.device());
+      return concat("{",
+        "\"type\":", "\"Tensor\",",
+        "\"shape\":", shape, ",",
+        "\"dtype\":", static_cast<int32_t>(dtype), ",",
+        "\"device\":", "\"", device, "\"",
+      "}");
+    } else {
+      return c10::nullopt;
+    }
   } else if (val.isTuple()) {
     std::vector<std::string> element_jsons;
     const auto& elements = val.toTupleRef().elements();
