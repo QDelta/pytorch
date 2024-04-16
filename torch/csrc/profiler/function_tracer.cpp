@@ -188,9 +188,12 @@ void sendOneCall(
     const char* name,
     const std::vector<std::string>& args) {
   auto stream = at::cuda::getCurrentCUDAStream().stream();
+  static char HOSTNAME_BUF[256];
+  gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
   // \x02 tag for torch call message
   auto info = concat("{",
     "\"pid\":", getpid(), ",",
+    "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
     "\"stream\":", jsonStream(stream), ",",
     "\"id\":", id, ",",
     "\"parent\":", parent, ",",
