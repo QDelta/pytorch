@@ -619,6 +619,9 @@ class Tensor(torch._C._TensorBase):
             return handle_torch_function(Tensor.share_memory_, (self,), self)
         self.storage().share_memory_()
         return self
+    
+    def share_memory_aggressive_(self, id: Optional[str] = None):
+        self.storage().share_memory_aggressive_(id)
 
     def __reversed__(self):
         r"""Reverses the tensor along dimension 0."""

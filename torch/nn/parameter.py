@@ -2,6 +2,29 @@ import torch
 from torch._C import _disabled_torch_function_impl
 from collections import OrderedDict
 
+def _in_module_init() -> bool:
+    import sys
+    import inspect
+    from . import Module
+
+    frame = sys._getframe(1)
+    while frame is not None:
+        fn_qualname = frame.f_code.co_qualname.rsplit('.', 1)
+        if fn_qualname[-1] == '__init__' and len(fn_qualname) == 2:
+            cls = inspect.getmodule(frame.f_code)
+            if cls is not None:
+                try:
+                    for class_name in fn_qualname[0].split('.'):
+                        cls = getattr(cls, class_name)
+                    if issubclass(cls, Module):
+                        return True
+                except:
+                    pass
+        frame = frame.f_back
+    return False
+
+_enable_aggressive_sharing = False
+
 # Metaclass to combine _TensorMeta and the instance check override for Parameter.
 class _ParameterMeta(torch._C._TensorMeta):
     # Make `isinstance(t, Parameter)` return True for custom tensor instances that have the _is_param flag.
@@ -30,9 +53,13 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
     def __new__(cls, data=None, requires_grad=True):
         if data is None:
             data = torch.empty(0)
-        if type(data) is torch.Tensor or type(data) is Parameter:
+        if type(data) is torch.Tensor:
             # For ease of BC maintenance, keep this path for standard Tensor.
             # Eventually (tm), we should change the behavior for standard Tensor to match.
+            if _enable_aggressive_sharing and data.dtype.is_floating_point and _in_module_init():
+                data.share_memory_aggressive_(str(data.dtype))
+            return torch.Tensor._make_subclass(cls, data, requires_grad)
+        elif type(data) is Parameter:
             return torch.Tensor._make_subclass(cls, data, requires_grad)
 
         # Path for custom tensors: set a flag on the instance to indicate parameter-ness.

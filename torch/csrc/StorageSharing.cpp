@@ -141,6 +141,52 @@ static PyObject* THPStorage_shareFilename(PyObject* _self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* THPStorage_shareFilenameAggressive(PyObject* _self, PyObject* args) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      reinterpret_cast<THPStorage*>(_self)->cdata->device_type() == at::kCPU,
+      "_share_filename_aggressive_: only available on CPU");
+  auto self = (THPStorage*)_self;
+  c10::StorageImpl* storage = self->cdata;
+
+  const char* id = NULL;
+  if (!PyArg_ParseTuple(args, "z", &id)) {
+    return nullptr;
+  }
+
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  THManagedMapAllocator* ctx;
+  // Storage is already in shared memory, just return a handle
+  if ((ctx = THManagedMapAllocator::fromDataPtr(storage->data_ptr()))) {
+    // done
+  } else {
+    // TODO: retry on collision
+    // TODO: free GIL - but remember to reacquire it when an exception is thrown
+    int flags = at::ALLOCATOR_MAPPED_SHAREDMEM;
+    std::string handle = "/torch";
+    if (id) {
+      handle += "_" + std::string(id);
+    }
+    handle += "_s" + std::to_string(storage->nbytes());
+    at::Storage new_storage(c10::make_intrusive<at::StorageImpl>(
+        c10::StorageImpl::use_byte_size_t(),
+        storage->nbytes(),
+        THManagedMapAllocator::makeDataPtr(
+            "", handle.c_str(), flags, storage->nbytes()),
+        /*allocator=*/nullptr,
+        /*resizable=*/false));
+
+    at::Storage _ = torch::createStorage(_self);
+
+    std::swap(*storage, *new_storage.unsafeGetStorageImpl());
+    ctx = THManagedMapAllocator::fromDataPtr(storage->data_ptr());
+    AT_ASSERT(ctx);
+  }
+
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
 static PyObject* THPStorage_newSharedFilename(
     PyObject* _unused,
     PyObject* args) {
@@ -661,6 +707,10 @@ static PyMethodDef THPStorage_sharingMethods[] = {
      METH_VARARGS | METH_STATIC,
      nullptr},
     {"_share_filename_cpu_", THPStorage_shareFilename, METH_NOARGS, nullptr},
+    {"_share_filename_cpu_aggressive_",
+     THPStorage_shareFilenameAggressive,
+     METH_VARARGS,
+     nullptr},
     {"_new_shared_filename_cpu",
      THPStorage_newSharedFilename,
      METH_VARARGS | METH_STATIC,
