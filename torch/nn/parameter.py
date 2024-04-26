@@ -2,26 +2,26 @@ import torch
 from torch._C import _disabled_torch_function_impl
 from collections import OrderedDict
 
-def _in_module_init() -> bool:
-    import sys
-    import inspect
-    from . import Module
-
-    frame = sys._getframe(1)
-    while frame is not None:
-        fn_qualname = frame.f_code.co_qualname.rsplit('.', 1)
-        if fn_qualname[-1] == '__init__' and len(fn_qualname) == 2:
-            cls = inspect.getmodule(frame.f_code)
-            if cls is not None:
-                try:
-                    for class_name in fn_qualname[0].split('.'):
-                        cls = getattr(cls, class_name)
-                    if issubclass(cls, Module):
-                        return True
-                except:
-                    pass
-        frame = frame.f_back
-    return False
+# CPython >= 3.11
+# def _in_module_init() -> bool:
+#     import sys
+#     import inspect
+#     from . import Module
+#     frame = sys._getframe(1)
+#     while frame is not None:
+#         fn_qualname = frame.f_code.co_qualname.rsplit('.', 1)
+#         if fn_qualname[-1] == '__init__' and len(fn_qualname) == 2:
+#             cls = inspect.getmodule(frame.f_code)
+#             if cls is not None:
+#                 try:
+#                     for class_name in fn_qualname[0].split('.'):
+#                         cls = getattr(cls, class_name)
+#                     if issubclass(cls, Module):
+#                         return True
+#                 except:
+#                     pass
+#         frame = frame.f_back
+#     return False
 
 _enable_aggressive_sharing = False
 
@@ -56,7 +56,7 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
         if type(data) is torch.Tensor:
             # For ease of BC maintenance, keep this path for standard Tensor.
             # Eventually (tm), we should change the behavior for standard Tensor to match.
-            if _enable_aggressive_sharing and data.dtype.is_floating_point and _in_module_init():
+            if _enable_aggressive_sharing:
                 data.share_memory_aggressive_(str(data.dtype))
             return torch.Tensor._make_subclass(cls, data, requires_grad)
         elif type(data) is Parameter:
