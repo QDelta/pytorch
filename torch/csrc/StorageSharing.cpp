@@ -155,9 +155,9 @@ static PyObject* THPStorage_shareFilenameAggressive(PyObject* _self, PyObject* a
   }
 
   // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  THManagedMapAllocator* ctx;
+  at::RefcountedMapAllocator* ctx;
   // Storage is already in shared memory, just return a handle
-  if ((ctx = THManagedMapAllocator::fromDataPtr(storage->data_ptr()))) {
+  if ((ctx = at::RefcountedMapAllocator::fromDataPtr(storage->data_ptr()))) {
     // done
   } else {
     // TODO: retry on collision
@@ -171,15 +171,15 @@ static PyObject* THPStorage_shareFilenameAggressive(PyObject* _self, PyObject* a
     at::Storage new_storage(c10::make_intrusive<at::StorageImpl>(
         c10::StorageImpl::use_byte_size_t(),
         storage->nbytes(),
-        THManagedMapAllocator::makeDataPtr(
-            "", handle.c_str(), flags, storage->nbytes()),
+        at::RefcountedMapAllocator::makeDataPtr(
+            handle.c_str(), flags, storage->nbytes(), nullptr),
         /*allocator=*/nullptr,
         /*resizable=*/false));
 
     at::Storage _ = torch::createStorage(_self);
 
     std::swap(*storage, *new_storage.unsafeGetStorageImpl());
-    ctx = THManagedMapAllocator::fromDataPtr(storage->data_ptr());
+    ctx = at::RefcountedMapAllocator::fromDataPtr(storage->data_ptr());
     AT_ASSERT(ctx);
   }
 
