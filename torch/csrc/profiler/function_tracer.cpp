@@ -10,7 +10,6 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
-#include <stack>
 #include <vector>
 
 #include <ATen/core/TensorBody.h>
@@ -183,7 +182,6 @@ inline std::string jsonStream(cudaStream_t stream) {
 
 void sendOneCall(
     int simulator_sock_fd,
-    size_t id, size_t parent,
     long cur_sim_time,
     const char* name,
     const std::vector<std::string>& args) {
@@ -195,8 +193,6 @@ void sendOneCall(
     "\"pid\":", getpid(), ",",
     "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
     "\"stream\":", jsonStream(stream), ",",
-    "\"id\":", id, ",",
-    "\"parent\":", parent, ",",
     "\"cur\":", cur_sim_time, ",",
     "\"name\":", "\"", name, "\",",
     "\"args\":", vectorToString(args),
@@ -218,8 +214,7 @@ struct TORCH_API FunctionTracer {
   int simulator_sock_fd{-1};
   std::mutex g_mutex{};
   CallbackHandle cb_handle{INVALID_CALLBACK_HANDLE};
-  size_t next_id{1};
-  std::stack<size_t> call_stack{};
+  std::vector<bool> call_stack{};
   void* cudalib_handle{nullptr}; // The preloaded library
   long (*get_time_offset)(){nullptr};
   void (*subtract_time)(long){nullptr};
@@ -256,14 +251,18 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
         }
       }
 
-      size_t id = tracer->next_id++;
-      size_t parent = tracer->call_stack.top();
-      tracer->call_stack.push(id);
+      auto fn_name = std::string(fn.name());
 
-      sendOneCall(
-          tracer->simulator_sock_fd,
-          id, parent, cur_sim_time,
-          fn.name(), args);
+      // TODO: support convolution_backward in bindings so we don't need to find its subcalls
+      bool this_is_aten = fn_name.find("aten::") == 0 && fn_name != "aten::convolution_backward";
+
+      bool parent_is_aten = tracer->call_stack.back();
+
+      if (!parent_is_aten && this_is_aten) {
+        sendOneCall(tracer->simulator_sock_fd, cur_sim_time, fn_name.c_str(), args);
+      }
+
+      tracer->call_stack.push_back(this_is_aten);
 
       auto end_time = current_time_us();
       tracer->subtract_time(end_time - start_time);
@@ -279,7 +278,7 @@ void tracerOnFunctionExit(const RecordFunction& fn, ObserverContext* ctx_ptr) {
   if (tracer != nullptr) {
     try {
       const std::lock_guard<std::mutex> lock(tracer->g_mutex);
-      tracer->call_stack.pop();
+      tracer->call_stack.pop_back();
     } catch (const std::exception& e) {
       LOG(WARNING) << "Exception in function tracer (exit): " << e.what();
     }
@@ -295,7 +294,7 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
     LOG(WARNING) << "Function tracer was already enabled.";
     return;
   }
-  tracer->call_stack.push(0);
+  tracer->call_stack.push_back(false);
 
   int sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
   auto simulator_addr = (sockaddr_un*)malloc(sizeof(sockaddr_un));
@@ -311,9 +310,7 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
 
   tracer->cb_handle = addGlobalCallback(
       RecordFunctionCallback(&tracerOnFunctionEnter, &tracerOnFunctionExit)
-          .needsInputs(true)
-          .needsOutputs(true)
-          .needsIds(true));
+          .needsInputs(true));
   
   auto cudalib_handle = dlopen("libcuda.so.1", RTLD_LAZY);
   if (cudalib_handle == nullptr) {
