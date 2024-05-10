@@ -233,36 +233,40 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
       auto start_time = current_time_us();
       auto cur_sim_time = start_time + tracer->get_time_offset();
 
-      const auto num_inputs = fn.num_inputs();
-      const auto inputs = fn.inputs();
-      const auto size_inputs = inputs.size();
-      std::vector<std::string> args;
-
-      if (num_inputs > size_inputs) {
-        LOG(WARNING) << "RecordFunction " << fn.name()
-                     << " expected num_inputs=" << num_inputs
-                     << " > inputs.size()=" << size_inputs;
-      } else {
-        for (const auto i : c10::irange(size_inputs - num_inputs, size_inputs)) {
-          const auto arg_json = jsonIValue(inputs[i]);
-          if (arg_json.has_value()) {
-            args.emplace_back(arg_json.value());
-          }
-        }
-      }
-
       auto fn_name = std::string(fn.name());
 
+      bool parent_is_aten = false;
+      for (bool is_aten: tracer->call_stack) {
+        if (is_aten) {
+          parent_is_aten = true;
+          break;
+        }
+      }
       // TODO: support convolution_backward in bindings so we don't need to find its subcalls
       bool this_is_aten = fn_name.find("aten::") == 0 && fn_name != "aten::convolution_backward";
-
-      bool parent_is_aten = tracer->call_stack.back();
+      tracer->call_stack.push_back(this_is_aten);
 
       if (!parent_is_aten && this_is_aten) {
+        const auto num_inputs = fn.num_inputs();
+        const auto inputs = fn.inputs();
+        const auto size_inputs = inputs.size();
+        std::vector<std::string> args;
+
+        if (num_inputs > size_inputs) {
+          LOG(WARNING) << "RecordFunction " << fn.name()
+                      << " expected num_inputs=" << num_inputs
+                      << " > inputs.size()=" << size_inputs;
+        } else {
+          for (const auto i : c10::irange(size_inputs - num_inputs, size_inputs)) {
+            const auto arg_json = jsonIValue(inputs[i]);
+            if (arg_json.has_value()) {
+              args.emplace_back(arg_json.value());
+            }
+          }
+        }
+
         sendOneCall(tracer->simulator_sock_fd, cur_sim_time, fn_name.c_str(), args);
       }
-
-      tracer->call_stack.push_back(this_is_aten);
 
       auto end_time = current_time_us();
       tracer->subtract_time(end_time - start_time);
