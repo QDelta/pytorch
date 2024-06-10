@@ -341,6 +341,19 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
 void disableFunctionTracer() {
   auto tracer = TracerManager::get();
   if (tracer != nullptr) {
+    static char HOSTNAME_BUF[256];
+    gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
+    auto info = concat("{",
+      "\"pid\":", getpid(), ",",
+      "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
+      "\"cur\":", current_time_us() + tracer->get_time_offset(),
+    "}\x03");
+
+    int ret = send(tracer->simulator_sock_fd, info.c_str(), info.size(), 0);
+    if (ret < 0) {
+      LOG(WARNING) << "Failed to send torch exit to simulator: " << strerror(errno);
+    }
+
     close(tracer->simulator_sock_fd);
     removeCallback(tracer->cb_handle);
     tracer->cb_handle = INVALID_CALLBACK_HANDLE;
