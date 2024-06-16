@@ -9,6 +9,7 @@ class _ParameterMeta(torch._C._TensorMeta):
         return super().__instancecheck__(instance) or (
             isinstance(instance, torch.Tensor) and getattr(instance, '_is_param', False))
 
+_enable_aggressive_sharing = False
 
 class Parameter(torch.Tensor, metaclass=_ParameterMeta):
     r"""A kind of Tensor that is to be considered a module parameter.
@@ -34,9 +35,13 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
     def __new__(cls, data=None, requires_grad=True):
         if data is None:
             data = torch.empty(0)
-        if type(data) is torch.Tensor or type(data) is Parameter:
+        if type(data) is torch.Tensor:
             # For ease of BC maintenance, keep this path for standard Tensor.
             # Eventually (tm), we should change the behavior for standard Tensor to match.
+            if _enable_aggressive_sharing:
+                data.share_memory_aggressive_(str(data.dtype))
+            return torch.Tensor._make_subclass(cls, data, requires_grad)
+        elif type(data) is Parameter:
             return torch.Tensor._make_subclass(cls, data, requires_grad)
 
         # Path for custom tensors: set a flag on the instance to indicate parameter-ness.
@@ -78,6 +83,23 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
             torch._utils._rebuild_parameter_with_state,
             (self.data, self.requires_grad, hooks, state)
         )
+
+    def type(self, dtype, non_blocking=False):
+        if not _enable_aggressive_sharing:
+            return super(Parameter, self).type(dtype, non_blocking)
+        elif dtype is None:
+            return str(self.dtype)
+        else:
+            if self.device.type == 'cpu':
+                data = torch.empty_like(self.data, dtype=dtype)
+                data.share_memory_aggressive_(str(dtype))
+                self.data = data
+                return self
+            else:
+                return self.data.type(dtype, non_blocking=non_blocking)
+
+    # TODO: also overload Tensor::{type_as,to,half,bfloat16} for
+    #       aggressive parameter sharing
 
     __torch_function__ = _disabled_torch_function_impl
 

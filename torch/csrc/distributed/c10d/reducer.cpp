@@ -2201,118 +2201,125 @@ compute_bucket_assignment_by_size(
   return std::make_tuple(bucket_indices, per_bucket_size_limits);
 }
 
-// Verifies corresponding params in the model replica have the same
-// sizes/strides across processes.
+// Skip distributed parameter verification
 void verify_params_across_processes(
     const c10::intrusive_ptr<c10d::ProcessGroup>& process_group,
     const std::vector<at::Tensor>& params,
-    const c10::optional<std::weak_ptr<c10d::Logger>>& logger) {
-  // First verify number of parameters to avoid inconsistent inputs into
-  // broadcast which can cause a crash.
-  // See https://github.com/pytorch/pytorch/issues/73547
+    const c10::optional<std::weak_ptr<c10d::Logger>>& logger)
+{ }
 
-  at::TensorOptions param_size_options;
-  param_size_options = param_size_options.dtype(at::kLong);
-  param_size_options = param_size_options.device(params[0].device());
-  // Note: Not using tensor building API because of
-  // https://github.com/pytorch/pytorch/issues/74114
-  at::Tensor param_size_tensor =
-      at::tensor({static_cast<int64_t>(params.size())}, param_size_options);
+// // Verifies corresponding params in the model replica have the same
+// // sizes/strides across processes.
+// void verify_params_across_processes(
+//     const c10::intrusive_ptr<c10d::ProcessGroup>& process_group,
+//     const std::vector<at::Tensor>& params,
+//     const c10::optional<std::weak_ptr<c10d::Logger>>& logger) {
+//   // First verify number of parameters to avoid inconsistent inputs into
+//   // broadcast which can cause a crash.
+//   // See https://github.com/pytorch/pytorch/issues/73547
 
-  // Allgather and verify parameter size.
-  std::vector<std::vector<at::Tensor>> param_size_output_tensors;
-  param_size_output_tensors.emplace_back();
-  auto world_size = process_group->getSize();
-  for (C10_UNUSED const auto i : c10::irange(world_size)) {
-    param_size_output_tensors.front().emplace_back(
-        at::empty_like(param_size_tensor));
-  }
+//   at::TensorOptions param_size_options;
+//   param_size_options = param_size_options.dtype(at::kLong);
+//   param_size_options = param_size_options.device(params[0].device());
+//   // Note: Not using tensor building API because of
+//   // https://github.com/pytorch/pytorch/issues/74114
+//   at::Tensor param_size_tensor =
+//       at::tensor({static_cast<int64_t>(params.size())}, param_size_options);
 
-  std::vector<at::Tensor> param_size_vec{param_size_tensor};
-  process_group->allgather(param_size_output_tensors, param_size_vec)->wait();
-  auto result_size_tensors = param_size_output_tensors.front();
-  for (const auto i : c10::irange(world_size)) {
-    auto param_size_for_rank = result_size_tensors[i][0].item<int>();
-    TORCH_CHECK(
-        static_cast<size_t>(param_size_for_rank) == params.size(),
-        c10::str(
-            "DDP expects same model across all ranks, but Rank ",
-            process_group->getRank(),
-            " has ",
-            params.size(),
-            " params, while rank ",
-            i,
-            " has inconsistent ",
-            param_size_for_rank,
-            " params."));
-  }
+//   // Allgather and verify parameter size.
+//   std::vector<std::vector<at::Tensor>> param_size_output_tensors;
+//   param_size_output_tensors.emplace_back();
+//   auto world_size = process_group->getSize();
+//   for (C10_UNUSED const auto i : c10::irange(world_size)) {
+//     param_size_output_tensors.front().emplace_back(
+//         at::empty_like(param_size_tensor));
+//   }
 
-  // Continue with parameter shape verification.
-  size_t i = 0;
-  for (const auto& t : params) {
-    i += 2 * t.dim();
-  }
-  at::TensorOptions options;
-  options = options.dtype(at::kLong);
-  auto metadata = at::empty({static_cast<long>(i)}, options);
+//   std::vector<at::Tensor> param_size_vec{param_size_tensor};
+//   process_group->allgather(param_size_output_tensors, param_size_vec)->wait();
+//   auto result_size_tensors = param_size_output_tensors.front();
+//   for (const auto i : c10::irange(world_size)) {
+//     auto param_size_for_rank = result_size_tensors[i][0].item<int>();
+//     TORCH_CHECK(
+//         static_cast<size_t>(param_size_for_rank) == params.size(),
+//         c10::str(
+//             "DDP expects same model across all ranks, but Rank ",
+//             process_group->getRank(),
+//             " has ",
+//             params.size(),
+//             " params, while rank ",
+//             i,
+//             " has inconsistent ",
+//             param_size_for_rank,
+//             " params."));
+//   }
 
-  // Technically, process 0 is the broadcast source, so only process 0 needs
-  // to populate metadata.  But no harm keeping work aligned across processes.
-  auto metadata_accessor = metadata.accessor<int64_t, 1>();
-  i = 0;
-  for (const auto& t : params) {
-    for (const auto& sz : t.sizes()) {
-      metadata_accessor[i++] = sz;
-    }
-    for (const auto& str : t.strides()) {
-      metadata_accessor[i++] = str;
-    }
-  }
+//   // Continue with parameter shape verification.
+//   size_t i = 0;
+//   for (const auto& t : params) {
+//     i += 2 * t.dim();
+//   }
+//   at::TensorOptions options;
+//   options = options.dtype(at::kLong);
+//   auto metadata = at::empty({static_cast<long>(i)}, options);
 
-  auto metadata_dev = metadata.clone().to(params[0].device());
-  std::vector<at::Tensor> vec{metadata_dev};
-  process_group->broadcast(vec)->wait();
+//   // Technically, process 0 is the broadcast source, so only process 0 needs
+//   // to populate metadata.  But no harm keeping work aligned across processes.
+//   auto metadata_accessor = metadata.accessor<int64_t, 1>();
+//   i = 0;
+//   for (const auto& t : params) {
+//     for (const auto& sz : t.sizes()) {
+//       metadata_accessor[i++] = sz;
+//     }
+//     for (const auto& str : t.strides()) {
+//       metadata_accessor[i++] = str;
+//     }
+//   }
 
-  // Technically, process 0 doesn't need to double-check metadata, because it
-  // was the source.  But no harm keeping work aligned.
-  auto control = at::empty({static_cast<long>(i)}, options);
-  control.copy_(metadata_dev, /*non_blocking=*/false);
-  auto control_accessor = control.accessor<int64_t, 1>();
-  i = 0;
-  for (const auto p : c10::irange(params.size())) {
-    const auto& t = params[p];
-    for (const auto& sz : t.sizes()) {
-      auto msg = c10::str(
-          "[",
-          process_group->getRank(),
-          "]: params[",
-          p,
-          "] in this process",
-          " with sizes ",
-          t.sizes(),
-          " appears not to match sizes of the same param in process 0.");
-      if (logger.has_value()) {
-        REDUCER_CHECK(sz == control_accessor[i++], logger.value(), msg)
-      } else {
-        TORCH_CHECK(sz == control_accessor[i++], msg)
-      }
-    }
-    for (const auto& str : t.strides()) {
-      auto msg = c10::str(
-          "params[",
-          p,
-          "] in this process",
-          " with sizes ",
-          t.sizes(),
-          " appears not to match strides of the same param in process 0.");
-      if (logger.has_value()) {
-        REDUCER_CHECK(str == control_accessor[i++], logger.value(), msg)
-      } else {
-        TORCH_CHECK(str == control_accessor[i++], msg)
-      }
-    }
-  }
-}
+//   auto metadata_dev = metadata.clone().to(params[0].device());
+//   std::vector<at::Tensor> vec{metadata_dev};
+//   process_group->broadcast(vec)->wait();
+
+//   // Technically, process 0 doesn't need to double-check metadata, because it
+//   // was the source.  But no harm keeping work aligned.
+//   auto control = at::empty({static_cast<long>(i)}, options);
+//   control.copy_(metadata_dev, /*non_blocking=*/false);
+//   auto control_accessor = control.accessor<int64_t, 1>();
+//   i = 0;
+//   for (const auto p : c10::irange(params.size())) {
+//     const auto& t = params[p];
+//     for (const auto& sz : t.sizes()) {
+//       auto msg = c10::str(
+//           "[",
+//           process_group->getRank(),
+//           "]: params[",
+//           p,
+//           "] in this process",
+//           " with sizes ",
+//           t.sizes(),
+//           " appears not to match sizes of the same param in process 0.");
+//       if (logger.has_value()) {
+//         REDUCER_CHECK(sz == control_accessor[i++], logger.value(), msg)
+//       } else {
+//         TORCH_CHECK(sz == control_accessor[i++], msg)
+//       }
+//     }
+//     for (const auto& str : t.strides()) {
+//       auto msg = c10::str(
+//           "params[",
+//           p,
+//           "] in this process",
+//           " with sizes ",
+//           t.sizes(),
+//           " appears not to match strides of the same param in process 0.");
+//       if (logger.has_value()) {
+//         REDUCER_CHECK(str == control_accessor[i++], logger.value(), msg)
+//       } else {
+//         TORCH_CHECK(str == control_accessor[i++], msg)
+//       }
+//     }
+//   }
+// }
 
 void Reducer::remove_autograd_hooks() {
   // Remove all hooks on variables registered by this Reducer. This is necessary

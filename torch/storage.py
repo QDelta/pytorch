@@ -51,6 +51,7 @@ class _StorageBase:
 
     # Defined in torch/csrc/generic/StorageSharing.cpp
     def _share_filename_cpu_(self, *args, **kwargs): ...  # noqa: E704
+    def _share_filename_cpu_aggressive_(self, *args, **kwargs): ...  # noqa: E704
     def _share_fd_cpu_(self, *args, **kwargs): ...  # noqa: E704
     @classmethod
     def _new_using_filename_cpu(cls: Type[T], size: int) -> T: ...  # type: ignore[empty-body] # noqa: E704
@@ -254,6 +255,13 @@ class _StorageBase:
             self._share_filename_cpu_()
         else:
             self._share_fd_cpu_()
+        return self
+
+    def share_memory_aggressive_(self, id):
+        if self.is_cuda:
+            pass
+        else:
+            self._share_filename_cpu_aggressive_(id)
         return self
 
     @classmethod
@@ -903,6 +911,10 @@ class TypedStorage:
     # For internal use only, to avoid deprecation warning
     def _share_memory_(self):
         self._untyped_storage.share_memory_()
+        return self
+
+    def _share_memory_aggressive_(self, id):
+        self._untyped_storage.share_memory_aggressive_(id)
         return self
 
     def _new_shared(self, size, *, device=None):

@@ -22,6 +22,8 @@ from .profiler import (
     schedule,
     supported_activities,
     tensorboard_trace_handler,
+    enable_function_tracer,
+    disable_function_tracer,
 )
 
 __all__ = [
@@ -35,6 +37,8 @@ __all__ = [
     "DeviceType",
     "record_function",
     "ExecutionTraceObserver",
+    "enable_function_tracer",
+    "disable_function_tracer",
 ]
 
 from . import itt
