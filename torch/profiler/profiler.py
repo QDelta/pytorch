@@ -20,6 +20,8 @@ from torch._C._profiler import (
     _enable_execution_trace_observer,
     _ExperimentalConfig,
     _remove_execution_trace_observer,
+    _enable_function_tracer,
+    _disable_function_tracer,
 )
 from torch.autograd import kineto_available, ProfilerActivity
 from torch.profiler._memory_profiler import MemoryProfile, MemoryProfileTimeline
@@ -32,6 +34,8 @@ __all__ = [
     "tensorboard_trace_handler",
     "profile",
     "ExecutionTraceObserver",
+    "enable_function_tracer",
+    "disable_function_tracer",
 ]
 PROFILER_STEP_NAME = "ProfilerStep"
 
@@ -891,3 +895,9 @@ class ExecutionTraceObserver(_ITraceObserver):
             torch.autograd._record_function_with_args_enter(
                 "## process_group:init ##", json.dumps(pg_config_info)
             )
+
+def enable_function_tracer(simulator_socket_path: str) -> None:
+    _enable_function_tracer(simulator_socket_path)
+
+def disable_function_tracer() -> None:
+    _disable_function_tracer()
