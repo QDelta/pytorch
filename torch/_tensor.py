@@ -714,6 +714,9 @@ class Tensor(torch._C.TensorBase):
         self._typed_storage()._share_memory_()
         return self
 
+    def share_memory_aggressive_(self, id: Optional[str] = None):
+        self._typed_storage()._share_memory_aggressive_(id)
+
     def module_load(self, other, assign=False):
         r"""Defines how to transform ``other`` when loading it into ``self`` in :meth:`~nn.Module.load_state_dict`.
 
