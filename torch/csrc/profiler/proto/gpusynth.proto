@@ -1,0 +1,51 @@
+/// This file must keep synchronized with the one in the gpusynth repo.
+
+syntax = "proto3";
+package torch.profiler.gpusynth;
+
+message TorchCall {
+  message CudaStream {
+    /// Device id
+    int32 device = 1;
+    /// Stream id
+    int32 id = 2;
+  }
+
+  enum CallPhase {
+    BEGIN = 0;
+    END = 1;
+  }
+
+  /// Pre-filled values
+  int32 pid = 1;
+  string hostname = 2;
+  /// Per-call variant values
+  CudaStream stream = 3;
+  int64 cur_sim_time = 4;
+  /// Function name
+  string name = 5;
+  /// Begin or end of the function call
+  CallPhase phase = 6;
+  /// Function arguments
+  repeated string args = 7;
+}
+
+message TorchCallBatch {
+  repeated TorchCall calls = 1;
+}
+
+message ExitRequest {
+  int32 pid = 1;
+  string hostname = 2;
+  int64 cur_sim_time = 3;
+}
+
+message GpuSynthReply {
+  int32 status = 1;
+}
+
+service GpuSynth {
+  rpc call_one(TorchCall) returns (GpuSynthReply);
+  rpc call_batch(TorchCallBatch) returns (GpuSynthReply);
+  rpc worker_exit(ExitRequest) returns (GpuSynthReply);
+}

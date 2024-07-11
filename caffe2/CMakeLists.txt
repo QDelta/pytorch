@@ -1623,6 +1623,16 @@ endif()
 
 target_link_libraries(torch_cpu PRIVATE flatbuffers)
 
+if(USE_CUDA)
+  # message(FATAL_ERROR "In caffe2/CMakeLists.txt, grpc_INCLUDE_DIRS=${gRPC_INCLUDE_DIRS}")
+  # message(FATAL_ERROR "GPUSYNTH_PROTO_BINARY_DIR = ${GPUSYNTH_PROTO_BINARY_DIR}")
+  target_include_directories(torch_cuda PRIVATE ${gRPC_INCLUDE_DIRS})
+  target_include_directories(torch_cuda PUBLIC ${GPUSYNTH_PROTO_BINARY_DIR})
+  target_link_libraries(torch_cuda PUBLIC function_tracer_proto)
+  target_link_libraries(torch_cuda PUBLIC ${Protobuf_LIBRARIES})
+  target_link_libraries(torch_cuda PUBLIC ${gRPC_LIBRARIES})
+endif()
+
 # Note [Global dependencies]
 # Some libraries (e.g. OpenMPI) like to dlopen plugins after they're initialized,
 # and they assume that all of their symbols will be available in the global namespace.

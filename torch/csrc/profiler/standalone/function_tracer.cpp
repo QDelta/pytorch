@@ -21,6 +21,9 @@
 #include <torch/csrc/profiler/standalone/function_tracer.h>
 #include <torch/csrc/profiler/util.h>
 
+#include <grpcpp/grpcpp.h>
+#include "gpusynth.grpc.pb.h"
+
 using namespace at;
 
 namespace torch {
@@ -191,7 +194,6 @@ void sendOneCall(
   // \x02 tag for torch call message
   auto info = concat("{",
     "\"pid\":", getpid(), ",",
-    "\"tid\":", gettid(), ",",
     "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
     "\"stream\":", jsonStream(stream), ",",
     "\"cur\":", cur_sim_time, ",",
@@ -342,20 +344,6 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
 void disableFunctionTracer() {
   auto tracer = TracerManager::get();
   if (tracer != nullptr) {
-    static char HOSTNAME_BUF[256];
-    gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
-    auto info = concat("{",
-      "\"pid\":", getpid(), ",",
-      "\"tid\":", gettid(), ",",
-      "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
-      "\"cur\":", current_time_us() + tracer->get_time_offset(),
-    "}\x03");
-
-    auto ret = send(tracer->simulator_sock_fd, info.c_str(), info.size(), 0);
-    if (ret < 0) {
-      LOG(WARNING) << "Failed to send torch exit to simulator: " << strerror(errno);
-    }
-
     close(tracer->simulator_sock_fd);
     removeCallback(tracer->cb_handle);
     tracer->cb_handle = INVALID_CALLBACK_HANDLE;
