@@ -1,5 +1,10 @@
-message("CMAKE_SYSTEM_PREFIX_PATH=${CMAKE_SYSTEM_PREFIX_PATH}")
-# find_package(Protobuf CONFIG REQUIRED PATHS ${CMAKE_SYSTEM_PREFIX_PATH} NO_DEFAULT_PATH)
+list(APPEND CMAKE_PREFIX_PATH $ENV{GRPC_INSTALL_PREFIX})
+list(APPEND CMAKE_PREFIX_PATH $ENV{PROTOBUF_INSTALL_PREFIX})
+list(APPEND CMAKE_MODULE_PATH $ENV{GRPC_MODULE_PATH})
+
+message("CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
+message("CMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}")
+# find_package(Protobuf CONFIG REQUIRED PATHS ${CMAKE_PREFIX_PATH} NO_DEFAULT_PATH)
 # find_package(gRPC CONFIG REQUIRED PATHS "/home/vscode/grpc/dist" NO_DEFAULT_PATH)
 find_package(Protobuf CONFIG REQUIRED)
 if(NOT ${Protobuf_FOUND})
@@ -18,7 +23,7 @@ get_target_property(gRPC_INCLUDE_DIRS gRPC::grpc
 message("Protobuf_INCLUDE_DIRS=${Protobuf_INCLUDE_DIRS}")
 message("gRPC_INCLUDE_DIRS=${gRPC_INCLUDE_DIRS}")
 
-include_directories(${CMAKE_SYSTEM_PREFIX_PATH}/include)
+include_directories(${CMAKE_PREFIX_PATH}/include)
 target_include_directories(torch_cuda PUBLIC ${Protobuf_INCLUDE_DIRS})
 target_include_directories(torch_cuda PUBLIC ${gRPC_INCLUDE_DIRS})
 
@@ -54,9 +59,8 @@ set(Protobuf_LIBRARIES "protobuf::libprotobuf")
 set(gRPC_LIBRARIES "gRPC::grpc++")
 message("==Protobuf_LIBRARIES=${Protobuf_LIBRARIES}")
 message("==gRPC_LIBRARIES=${gRPC_LIBRARIES}")
-target_link_libraries(torch_cuda PUBLIC function_tracer_proto)
-target_link_libraries(torch_cuda PUBLIC ${Protobuf_LIBRARIES})
-target_link_libraries(torch_cuda PUBLIC ${gRPC_LIBRARIES})
+target_link_libraries(function_tracer_proto PUBLIC ${Protobuf_LIBRARIES})
+target_link_libraries(function_tracer_proto PUBLIC ${gRPC_LIBRARIES})
 
 set(Protobuf_INCLUDE_DIRS ${gRPC_INCLUDE_DIRS} PARENT_SCOPE)
 set(gRPC_INCLUDE_DIRS ${gRPC_INCLUDE_DIRS} PARENT_SCOPE)
