@@ -23,9 +23,9 @@ get_target_property(gRPC_INCLUDE_DIRS gRPC::grpc
 message("Protobuf_INCLUDE_DIRS=${Protobuf_INCLUDE_DIRS}")
 message("gRPC_INCLUDE_DIRS=${gRPC_INCLUDE_DIRS}")
 
-include_directories(${CMAKE_PREFIX_PATH}/include)
-target_include_directories(torch_cuda PUBLIC ${Protobuf_INCLUDE_DIRS})
-target_include_directories(torch_cuda PUBLIC ${gRPC_INCLUDE_DIRS})
+# include_directories(${CMAKE_PREFIX_PATH}/include)
+# target_include_directories(torch_cuda PUBLIC ${Protobuf_INCLUDE_DIRS})
+# target_include_directories(torch_cuda PUBLIC ${gRPC_INCLUDE_DIRS})
 
 # Generate source files from proto files
 set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/gpusynth.proto)
@@ -34,8 +34,8 @@ message("PROTO_FILES=${PROTO_FILES}")
 add_library(function_tracer_proto ${PROTO_FILES})
 target_include_directories(function_tracer_proto INTERFACE ${Protobuf_INCLUDE_DIRS})
 target_include_directories(function_tracer_proto INTERFACE ${gRPC_INCLUDE_DIRS})
-include_directories(${Protobuf_INCLUDE_DIRS})
-include_directories(${gRPC_INCLUDE_DIRS})
+# include_directories(${Protobuf_INCLUDE_DIRS})
+# include_directories(${gRPC_INCLUDE_DIRS})
 protobuf_generate(
   LANGUAGE cpp
   TARGET function_tracer_proto

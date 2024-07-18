@@ -1,10 +1,10 @@
 #ifdef _WIN32
 #error "Not supported on Windows"
 #else
-#include <unistd.h>
+#include <dlfcn.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #include <chrono>
@@ -16,8 +16,8 @@
 #include <ATen/core/function_schema.h>
 #include <ATen/core/stack.h>
 #include <ATen/record_function.h>
-#include <c10/util/irange.h>
 #include <c10/cuda/CUDAStream.h>
+#include <c10/util/irange.h>
 #include <torch/csrc/profiler/standalone/function_tracer.h>
 #include <torch/csrc/profiler/util.h>
 
@@ -30,7 +30,77 @@ namespace torch {
 namespace profiler {
 namespace impl {
 
-template<typename T>
+class GpuSynthClient {
+ public:
+  GpuSynthClient() {}
+  explicit GpuSynthClient(std::shared_ptr<grpc::Channel> channel)
+      : stub_(gpusynth::GpuSynth::NewStub(channel)) {
+    pid_ = getpid();
+    gethostname(hostname_buf_, sizeof(hostname_buf_));
+  }
+
+  void sendOneCall(
+      long cur_sim_time,
+      const char* name,
+      const std::vector<std::string>& args) {
+    // Prepare the call
+    gpusynth::TorchCall call;
+
+    call.set_pid(pid_);
+    call.set_hostname(hostname_buf_);
+
+    struct _cudaStream {
+      int device;
+      int id;
+    };
+    auto _stream = reinterpret_cast<_cudaStream*>(
+        at::cuda::getCurrentCUDAStream().stream());
+    if (_stream) {
+      call.mutable_stream()->set_device(_stream->device);
+      call.mutable_stream()->set_id(_stream->id);
+    }
+    call.set_cur_sim_time(cur_sim_time);
+    call.set_name(name);
+    call.set_phase(gpusynth::TorchCall::CallPhase::TorchCall_CallPhase_BEGIN);
+    for (const auto& arg : args) {
+      call.add_args(arg);
+    }
+
+    // we don't really care about the reply
+    gpusynth::GpuSynthReply reply;
+    grpc::ClientContext context;
+
+    // The actual RPC.
+    stub_->async()->call(&context, &call, &reply, &GpuSynthClient::callback);
+  }
+
+  static void callback(grpc::Status status) {
+    if (!status.ok()) {
+      LOG(WARNING) << "GpuSynthClient: " << status.error_code() << ": "
+                   << status.error_message();
+    }
+  }
+
+  void bye(long cur_sim_time) {
+    gpusynth::ExitRequest exit;
+    exit.set_pid(pid_);
+    exit.set_hostname(hostname_buf_);
+    exit.set_cur_sim_time(cur_sim_time);
+
+    gpusynth::GpuSynthReply reply;
+    grpc::ClientContext context;
+
+    grpc::Status status = stub_->bye(&context, exit, &reply);
+    callback(status);
+  }
+
+ private:
+  __pid_t pid_;
+  char hostname_buf_[256];
+  std::unique_ptr<gpusynth::GpuSynth::Stub> stub_;
+};
+
+template <typename T>
 inline std::string vectorToString(const std::vector<T>& v) {
   std::ostringstream os;
   os << "[";
@@ -46,20 +116,20 @@ inline std::string vectorToString(const std::vector<T>& v) {
 
 inline void output_all(std::ostringstream& os) {}
 
-template<typename Arg, typename... Args>
+template <typename Arg, typename... Args>
 inline void output_all(std::ostringstream& os, Arg arg, Args... args) {
   os << arg;
   output_all(os, args...);
 }
 
-template<typename... Args>
+template <typename... Args>
 inline std::string concat(Args... args) {
   std::ostringstream os;
   output_all(os, args...);
   return os.str();
 }
 
-inline std::string deviceStr(const c10::Device &device) {
+inline std::string deviceStr(const c10::Device& device) {
   auto s = device.str();
   if (s == "cuda") {
     auto curr_dev = at::cuda::current_device();
@@ -69,6 +139,7 @@ inline std::string deviceStr(const c10::Device &device) {
   }
 }
 
+// clang-format off
 inline c10::optional<std::string> jsonIValue(
   const c10::IValue& val,
   const size_t maxArrayLen = 4096) {
@@ -166,6 +237,7 @@ inline c10::optional<std::string> jsonIValue(
   }
   return c10::nullopt;
 }
+// clang-format on
 
 inline std::string jsonStream(cudaStream_t stream) {
   struct _cudaStream {
@@ -173,11 +245,8 @@ inline std::string jsonStream(cudaStream_t stream) {
     int id;
   };
   if (stream) {
-    auto stream_ = (_cudaStream *)stream;
-    return concat("[",
-      stream_->device, ",",
-      stream_->id,
-    "]");
+    auto stream_ = (_cudaStream*)stream;
+    return concat("[", stream_->device, ",", stream_->id, "]");
   } else {
     return "null";
   }
@@ -192,6 +261,7 @@ void sendOneCall(
   static char HOSTNAME_BUF[256];
   gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
   // \x02 tag for torch call message
+  // clang-format off
   auto info = concat("{",
     "\"pid\":", getpid(), ",",
     "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
@@ -200,10 +270,12 @@ void sendOneCall(
     "\"name\":", "\"", name, "\",",
     "\"args\":", vectorToString(args),
   "}\x02");
+  // clang-format on
 
   int ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
   if (ret < 0) {
-    LOG(WARNING) << "Failed to send torch call to simulator: " << strerror(errno);
+    LOG(WARNING) << "Failed to send torch call to simulator: "
+                 << strerror(errno);
   }
 }
 
@@ -214,7 +286,8 @@ static inline long current_time_us() {
 }
 
 struct TORCH_API FunctionTracer {
-  int simulator_sock_fd{-1};
+  // int simulator_sock_fd{-1};
+  GpuSynthClient client;
   std::mutex g_mutex{};
   CallbackHandle cb_handle{INVALID_CALLBACK_HANDLE};
   std::vector<bool> call_stack{};
@@ -227,7 +300,8 @@ struct TORCH_API FunctionTracer {
 
 using TracerManager = GlobalStateManager<FunctionTracer>;
 
-std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn) {
+std::unique_ptr<ObserverContext> tracerOnFunctionEnter(
+    const RecordFunction& fn) {
   auto tracer = TracerManager::get();
   if (tracer != nullptr) {
     try {
@@ -239,14 +313,16 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
       auto fn_name = std::string(fn.name());
 
       bool parent_is_aten = false;
-      for (bool is_aten: tracer->call_stack) {
+      for (bool is_aten : tracer->call_stack) {
         if (is_aten) {
           parent_is_aten = true;
           break;
         }
       }
-      // TODO: support convolution_backward in bindings so we don't need to find its subcalls
-      bool this_is_aten = fn_name.find("aten::") == 0 && fn_name != "aten::convolution_backward";
+      // TODO: support convolution_backward in bindings so we don't need to find
+      // its subcalls
+      bool this_is_aten = fn_name.find("aten::") == 0 &&
+          fn_name != "aten::convolution_backward";
       tracer->call_stack.push_back(this_is_aten);
 
       if (!parent_is_aten && this_is_aten) {
@@ -257,10 +333,11 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
 
         if (num_inputs > size_inputs) {
           LOG(WARNING) << "RecordFunction " << fn.name()
-                      << " expected num_inputs=" << num_inputs
-                      << " > inputs.size()=" << size_inputs;
+                       << " expected num_inputs=" << num_inputs
+                       << " > inputs.size()=" << size_inputs;
         } else {
-          for (const auto i : c10::irange(size_inputs - num_inputs, size_inputs)) {
+          for (const auto i :
+               c10::irange(size_inputs - num_inputs, size_inputs)) {
             const auto arg_json = jsonIValue(inputs[i]);
             if (arg_json.has_value()) {
               args.emplace_back(arg_json.value());
@@ -268,7 +345,9 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
           }
         }
 
-        sendOneCall(tracer->simulator_sock_fd, cur_sim_time, fn_name.c_str(), args);
+        // sendOneCall(
+        //     tracer->simulator_sock_fd, cur_sim_time, fn_name.c_str(), args);
+        tracer->client.sendOneCall(cur_sim_time, fn_name.c_str(), args);
       }
 
       auto end_time = current_time_us();
@@ -303,17 +382,21 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
   }
   tracer->call_stack.push_back(false);
 
-  int sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-  auto simulator_addr = (sockaddr_un*)malloc(sizeof(sockaddr_un));
-  simulator_addr->sun_family = AF_UNIX;
-  strncpy(simulator_addr->sun_path, simulator_sock_path.c_str(), sizeof(simulator_addr->sun_path) - 1);
-  int ret = connect(sock_fd, (sockaddr*)simulator_addr, sizeof(sockaddr_un));
-  if (ret < 0) {
-    LOG(WARNING) << "Failed to connect to simulator: " << strerror(errno);
-    return;
-  }
-  free(simulator_addr);
-  tracer->simulator_sock_fd = sock_fd;
+  // int sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+  // auto simulator_addr = (sockaddr_un*)malloc(sizeof(sockaddr_un));
+  // simulator_addr->sun_family = AF_UNIX;
+  // strncpy(
+  //     simulator_addr->sun_path,
+  //     simulator_sock_path.c_str(),
+  //     sizeof(simulator_addr->sun_path) - 1);
+  // int ret = connect(sock_fd, (sockaddr*)simulator_addr, sizeof(sockaddr_un));
+  // if (ret < 0) {
+  //   LOG(WARNING) << "Failed to connect to simulator: " << strerror(errno);
+  //   return;
+  // }
+  // free(simulator_addr);
+  // tracer->simulator_sock_fd = sock_fd;
+  GpuSynthClient client(grpc::CreateChannel(simulator_sock_path, grpc::InsecureChannelCredentials()));
 
   tracer->cb_handle = addGlobalCallback(
       RecordFunctionCallback(&tracerOnFunctionEnter, &tracerOnFunctionExit)
@@ -327,14 +410,16 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
 
     auto get_time_offset = dlsym(cudalib_handle, "get_time_offset");
     if (get_time_offset == nullptr) {
-      LOG(WARNING) << "Failed to find get_time_offset in libcuda.so.1: " << dlerror();
+      LOG(WARNING) << "Failed to find get_time_offset in libcuda.so.1: "
+                   << dlerror();
     } else {
       tracer->get_time_offset = (long (*)())get_time_offset;
     }
 
     auto subtract_time = dlsym(cudalib_handle, "subtract_time");
     if (subtract_time == nullptr) {
-      LOG(WARNING) << "Failed to find subtract_time in libcuda.so.1: " << dlerror();
+      LOG(WARNING) << "Failed to find subtract_time in libcuda.so.1: "
+                   << dlerror();
     } else {
       tracer->subtract_time = (void (*)(long))subtract_time;
     }
@@ -344,7 +429,10 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
 void disableFunctionTracer() {
   auto tracer = TracerManager::get();
   if (tracer != nullptr) {
-    close(tracer->simulator_sock_fd);
+    // close(tracer->simulator_sock_fd);
+    auto start_time = current_time_us();
+    auto cur_sim_time = start_time + tracer->get_time_offset();
+    tracer->client.bye(cur_sim_time);
     removeCallback(tracer->cb_handle);
     tracer->cb_handle = INVALID_CALLBACK_HANDLE;
     if (tracer->cudalib_handle != nullptr) {

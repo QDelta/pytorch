@@ -30,9 +30,9 @@ message TorchCall {
   repeated string args = 7;
 }
 
-message TorchCallBatch {
-  repeated TorchCall calls = 1;
-}
+// message TorchCallBatch {
+//   repeated TorchCall calls = 1;
+// }
 
 message ExitRequest {
   int32 pid = 1;
@@ -45,7 +45,7 @@ message GpuSynthReply {
 }
 
 service GpuSynth {
-  rpc call_one(TorchCall) returns (GpuSynthReply);
-  rpc call_batch(TorchCallBatch) returns (GpuSynthReply);
-  rpc worker_exit(ExitRequest) returns (GpuSynthReply);
+  rpc call(TorchCall) returns (GpuSynthReply);
+  // rpc callBatch(TorchCallBatch) returns (GpuSynthReply);
+  rpc bye(ExitRequest) returns (GpuSynthReply);
 }
