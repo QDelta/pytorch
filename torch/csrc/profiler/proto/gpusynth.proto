@@ -3,6 +3,61 @@
 syntax = "proto3";
 package torch.profiler.gpusynth;
 
+/// The (de)-serialization is handled by user themselves.
+message CudaCall {
+  bytes payload = 1;
+}
+
+// enum TorchValueType {
+//   TENSOR = 0;
+//   TUPLE = 1;
+//   List = 2;
+//   Double = 3;
+//   Int = 4;
+//   Bool = 5;
+//   String = 6;
+//   Device = 7;
+// }
+message TorchValue {
+  message Tensor {
+    repeated int64 shape = 1;
+    int32 dtype = 2;
+    string device = 3;
+  }
+  message Tuple {
+    repeated TorchValue elements = 1;
+  }
+  message List {
+    repeated TorchValue elements = 1;
+  }
+  message Double {
+    double value = 1;
+  }
+  message Int {
+    int64 value = 1;
+  }
+  message Bool {
+    bool value = 1;
+  }
+  message String {
+    string value = 1;
+  }
+  message Device {
+    string value = 1;
+  }
+  // TorchValueType type = 1;
+  oneof oneof {
+    Tensor tensor = 1;
+    Tuple tuple = 2;
+    List list = 3;
+    Double double = 4;
+    Int int = 5;
+    Bool bool = 6;
+    String string = 7;
+    Device device = 8;
+  }
+}
+
 message TorchCall {
   message CudaStream {
     /// Device id
@@ -18,16 +73,18 @@ message TorchCall {
 
   /// Pre-filled values
   int32 pid = 1;
-  string hostname = 2;
+  int32 tid = 2;
+  string hostname = 3;
   /// Per-call variant values
-  CudaStream stream = 3;
-  int64 cur_sim_time = 4;
+  CudaStream stream = 4;
+  int64 cur_sim_time = 5;
   /// Function name
-  string name = 5;
+  string name = 6;
   /// Begin or end of the function call
-  CallPhase phase = 6;
+  CallPhase phase = 7;
   /// Function arguments
-  repeated string args = 7;
+  // repeated string args = 8;
+  repeated TorchValue args = 8;
 }
 
 // message TorchCallBatch {
@@ -36,16 +93,38 @@ message TorchCall {
 
 message ExitRequest {
   int32 pid = 1;
-  string hostname = 2;
-  int64 cur_sim_time = 3;
+  int32 tid = 2;
+  string hostname = 3;
+  int64 cur_sim_time = 4;
 }
 
-message GpuSynthReply {
-  int32 status = 1;
+message VoidResponse {
+}
+
+message SyncResponse {
+  int64 end_time = 1;
+}
+
+message EventResult {
+  optional int64 end_time = 1;
+}
+
+message StreamResult {
+  bool completed = 1;
+}
+
+message NcclId {
+  bytes content = 1;
 }
 
 service GpuSynth {
-  rpc call(TorchCall) returns (GpuSynthReply);
-  // rpc callBatch(TorchCallBatch) returns (GpuSynthReply);
-  rpc bye(ExitRequest) returns (GpuSynthReply);
+  rpc cuda(CudaCall) returns (VoidResponse);
+  rpc torch(TorchCall) returns (VoidResponse);
+  rpc bye(ExitRequest) returns (VoidResponse);
+  // rpc torch_batch(TorchCallBatch) returns (VoidResponse);
+
+  rpc cuda_sync(CudaCall) returns (SyncResponse);
+  rpc cuda_event_query(CudaCall) returns (EventResult);
+  rpc cuda_stream_query(CudaCall) returns (StreamResult);
+  rpc nccl_get_unique_id(CudaCall) returns (NcclId);
 }

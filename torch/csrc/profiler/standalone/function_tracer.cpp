@@ -47,6 +47,7 @@ class GpuSynthClient {
     gpusynth::TorchCall call;
 
     call.set_pid(pid_);
+    call.set_tid(gettid());
     call.set_hostname(hostname_buf_);
 
     struct _cudaStream {
@@ -67,11 +68,11 @@ class GpuSynthClient {
     }
 
     // we don't really care about the reply
-    gpusynth::GpuSynthReply reply;
+    gpusynth::VoidResponse res;
     grpc::ClientContext context;
 
     // The actual RPC.
-    stub_->async()->call(&context, &call, &reply, &GpuSynthClient::callback);
+    stub_->async()->torch(&context, &call, &res, &GpuSynthClient::callback);
   }
 
   static void callback(grpc::Status status) {
@@ -84,13 +85,14 @@ class GpuSynthClient {
   void bye(long cur_sim_time) {
     gpusynth::ExitRequest exit;
     exit.set_pid(pid_);
+    exit.set_tid(gettid());
     exit.set_hostname(hostname_buf_);
     exit.set_cur_sim_time(cur_sim_time);
 
-    gpusynth::GpuSynthReply reply;
+    gpusynth::VoidResponse res;
     grpc::ClientContext context;
 
-    grpc::Status status = stub_->bye(&context, exit, &reply);
+    grpc::Status status = stub_->bye(&context, exit, &res);
     callback(status);
   }
 
@@ -264,6 +266,7 @@ void sendOneCall(
   // clang-format off
   auto info = concat("{",
     "\"pid\":", getpid(), ",",
+    "\"tid\":", gettid(), ",",
     "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
     "\"stream\":", jsonStream(stream), ",",
     "\"cur\":", cur_sim_time, ",",
@@ -429,6 +432,20 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
 void disableFunctionTracer() {
   auto tracer = TracerManager::get();
   if (tracer != nullptr) {
+    // static char HOSTNAME_BUF[256];
+    // gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
+    // auto info = concat("{",
+    //   "\"pid\":", getpid(), ",",
+    //   "\"tid\":", gettid(), ",",
+    //   "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
+    //   "\"cur\":", current_time_us() + tracer->get_time_offset(),
+    // "}\x03");
+
+    // auto ret = send(tracer->simulator_sock_fd, info.c_str(), info.size(), 0);
+    // if (ret < 0) {
+    //   LOG(WARNING) << "Failed to send torch exit to simulator: " << strerror(errno);
+    // }
+
     // close(tracer->simulator_sock_fd);
     auto start_time = current_time_us();
     auto cur_sim_time = start_time + tracer->get_time_offset();
