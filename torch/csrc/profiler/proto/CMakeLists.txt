@@ -6,6 +6,7 @@ message("CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
 message("CMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}")
 # find_package(Protobuf CONFIG REQUIRED PATHS ${CMAKE_PREFIX_PATH} NO_DEFAULT_PATH)
 # find_package(gRPC CONFIG REQUIRED PATHS "/home/vscode/grpc/dist" NO_DEFAULT_PATH)
+# find_package(Protobuf CONFIG REQUIRED NO_CMAKE_PACKAGE_REGISTRY)
 find_package(Protobuf CONFIG REQUIRED)
 if(NOT ${Protobuf_FOUND})
   message(FATAL_ERROR "Could not locate protobuf.")
@@ -41,6 +42,7 @@ protobuf_generate(
   TARGET function_tracer_proto
   PROTOS ${PROTO_FILES}
   PROTOC_OUT_DIR ${GPUSYNTH_PROTO_BINARY_DIR}
+  PROTOC_OPTIONS "--experimental_allow_proto3_optional"
 )
 protobuf_generate(
   LANGUAGE grpc
@@ -49,6 +51,7 @@ protobuf_generate(
   PLUGIN "protoc-gen-grpc=\$<TARGET_FILE:gRPC::grpc_cpp_plugin>"
   PROTOS ${PROTO_FILES}
   PROTOC_OUT_DIR ${GPUSYNTH_PROTO_BINARY_DIR}
+  PROTOC_OPTIONS "--experimental_allow_proto3_optional"
 )
 install(TARGETS function_tracer_proto
         EXPORT Caffe2Targets

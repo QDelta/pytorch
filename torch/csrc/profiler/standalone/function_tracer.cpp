@@ -1,3 +1,4 @@
+#include "gpusynth.pb.h"
 #ifdef _WIN32
 #error "Not supported on Windows"
 #else
@@ -42,7 +43,7 @@ class GpuSynthClient {
   void sendOneCall(
       long cur_sim_time,
       const char* name,
-      const std::vector<std::string>& args) {
+      const std::vector<gpusynth::TorchValue>& args) {
     // Prepare the call
     gpusynth::TorchCall call;
 
@@ -64,7 +65,7 @@ class GpuSynthClient {
     call.set_name(name);
     call.set_phase(gpusynth::TorchCall::CallPhase::TorchCall_CallPhase_BEGIN);
     for (const auto& arg : args) {
-      call.add_args(arg);
+      *call.add_args() = arg;
     }
 
     // we don't really care about the reply
@@ -139,6 +140,88 @@ inline std::string deviceStr(const c10::Device& device) {
   } else {
     return s;
   }
+}
+
+inline c10::optional<gpusynth::TorchValue> protobufIValue(
+    const c10::IValue& val,
+    const size_t maxArrayLen = 4096) {
+  using gpusynth::TorchValue;
+  TorchValue torch_value;
+  if (val.isTensor()) {
+    const auto t = val.toTensor();
+    if (t.has_storage()) {
+      TorchValue::Tensor* tensor = torch_value.mutable_tensor();
+      for (auto dim : t.sizes()) {
+        tensor->add_shape(dim);
+      }
+      tensor->set_dtype(static_cast<int32_t>(t.dtype().toScalarType()));
+      tensor->set_device(deviceStr(t.device()));
+      return torch_value;
+    } else {
+      return c10::nullopt;
+    }
+  } else if (val.isTuple()) {
+    TorchValue::Tuple* tuple = torch_value.mutable_tuple();
+    const auto& elements = val.toTupleRef().elements();
+    for (const auto& element : elements) {
+      auto element_value = protobufIValue(element, maxArrayLen);
+      if (element_value.has_value()) {
+        *tuple->add_elements() = element_value.value();
+      }
+    }
+    return torch_value;
+  } else if (val.isList()) {
+    TorchValue::List* list = torch_value.mutable_list();
+    const auto& elements = val.toList();
+    for (const auto j : c10::irange(elements.size())) {
+      if (j >= maxArrayLen) {
+        LOG(WARNING) << "list size=" << elements.size()
+                     << " exceeded maxArrayLen=" << maxArrayLen;
+        break;
+      }
+      auto element_value = protobufIValue(elements.get(j), maxArrayLen);
+      if (element_value.has_value()) {
+        *list->add_elements() = element_value.value();
+      }
+    }
+    return torch_value;
+  } else if (val.isDouble()) {
+    double d_val = val.toDouble();
+    if (std::isinf(d_val)) {
+      if (d_val > 0) {
+        d_val = std::numeric_limits<double>::max();
+      } else {
+        d_val = -std::numeric_limits<double>::max();
+      }
+    }
+    if (std::isnan(d_val)) {
+      d_val = 0;
+    }
+    torch_value.mutable_double_()->set_value(d_val);
+    return torch_value;
+  } else if (val.isInt()) {
+    torch_value.mutable_int_()->set_value(val.toInt());
+    return torch_value;
+  } else if (val.isBool()) {
+    torch_value.mutable_bool_()->set_value(val.toBool());
+    return torch_value;
+  } else if (val.isString()) {
+    const std::string& str_val = val.toStringRef();
+    TorchValue::String* string_value = torch_value.mutable_string();
+    if (str_val.size() > maxArrayLen) {
+      LOG(WARNING) << "string size=" << str_val.size()
+                   << " exceeded maxArrayLen=" << maxArrayLen;
+      string_value->set_value(str_val.substr(0, maxArrayLen));
+    } else {
+      string_value->set_value(str_val);
+    }
+    return torch_value;
+  } else if (val.isDevice()) {
+    torch_value.mutable_device()->set_value(deviceStr(val.toDevice()));
+    return torch_value;
+  }
+
+  return c10::nullopt;
 }
 
 // clang-format off
@@ -332,7 +415,8 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(
         const auto num_inputs = fn.num_inputs();
         const auto inputs = fn.inputs();
         const auto size_inputs = inputs.size();
-        std::vector<std::string> args;
+        // std::vector<std::string> args;
+        std::vector<gpusynth::TorchValue> args;
 
         if (num_inputs > size_inputs) {
           LOG(WARNING) << "RecordFunction " << fn.name()
@@ -341,9 +425,13 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(
         } else {
           for (const auto i :
                c10::irange(size_inputs - num_inputs, size_inputs)) {
-            const auto arg_json = jsonIValue(inputs[i]);
-            if (arg_json.has_value()) {
-              args.emplace_back(arg_json.value());
+            // const auto arg_json = jsonIValue(inputs[i]);
+            // if (arg_json.has_value()) {
+            //   args.emplace_back(arg_json.value());
+            // }
+            const auto arg_proto = protobufIValue(inputs[i]);
+            if (arg_proto.has_value()) {
+              args.emplace_back(arg_proto.value());
             }
           }
         }
@@ -399,7 +487,8 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
   // }
   // free(simulator_addr);
   // tracer->simulator_sock_fd = sock_fd;
-  GpuSynthClient client(grpc::CreateChannel(simulator_sock_path, grpc::InsecureChannelCredentials()));
+  GpuSynthClient client(grpc::CreateChannel(
+      simulator_sock_path, grpc::InsecureChannelCredentials()));
 
   tracer->cb_handle = addGlobalCallback(
       RecordFunctionCallback(&tracerOnFunctionEnter, &tracerOnFunctionExit)
@@ -443,7 +532,8 @@ void disableFunctionTracer() {
 
     // auto ret = send(tracer->simulator_sock_fd, info.c_str(), info.size(), 0);
     // if (ret < 0) {
-    //   LOG(WARNING) << "Failed to send torch exit to simulator: " << strerror(errno);
+    //   LOG(WARNING) << "Failed to send torch exit to simulator: " <<
+    //   strerror(errno);
     // }
 
     // close(tracer->simulator_sock_fd);
