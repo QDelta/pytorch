@@ -71,9 +71,27 @@ class GpuSynthClient {
     // we don't really care about the reply
     gpusynth::VoidResponse res;
     grpc::ClientContext context;
+    context.set_authority("pytorch");
 
     // The actual RPC.
-    stub_->async()->torch(&context, &call, &res, &GpuSynthClient::callback);
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    grpc::Status status;
+    stub_->async()->torch(
+        &context, &call, &res, [&mu, &cv, &done, &status](grpc::Status s) {
+          status = std::move(s);
+          std::lock_guard<std::mutex> lock(mu);
+          done = true;
+          cv.notify_one();
+        });
+
+    std::unique_lock<std::mutex> lock(mu);
+    while (!done) {
+      cv.wait(lock);
+    }
+
+    callback(status);
   }
 
   static void callback(grpc::Status status) {
@@ -490,6 +508,7 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
   GpuSynthClient client(grpc::CreateChannel(
       simulator_sock_path, grpc::InsecureChannelCredentials()));
 
+  tracer->client = std::move(client);
   tracer->cb_handle = addGlobalCallback(
       RecordFunctionCallback(&tracerOnFunctionEnter, &tracerOnFunctionExit)
           .needsInputs(true));
