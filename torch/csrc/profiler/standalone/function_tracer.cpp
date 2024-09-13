@@ -23,9 +23,7 @@
 
 using namespace at;
 
-namespace torch {
-namespace profiler {
-namespace impl {
+namespace torch::profiler::impl {
 
 template<typename T>
 inline std::string vectorToString(const std::vector<T>& v) {
@@ -66,11 +64,41 @@ inline std::string deviceStr(const c10::Device &device) {
   }
 }
 
+inline bool hasCUDATensor(const c10::IValue& val, const size_t maxArrayLen = 4096) {
+  if (val.isTensor()) {
+    const auto& t = val.toTensor();
+    return t.has_storage() && t.device().is_cuda();
+  } else if (val.isTuple()) {
+    const auto& elements = val.toTupleRef().elements();
+    for (const auto j: c10::irange(elements.size())) {
+      if (hasCUDATensor(elements[j], maxArrayLen)) {
+        return true;
+      }
+    }
+    return false;
+  } else if (val.isList()) {
+    const auto& elements = val.toList();
+    for (const auto j: c10::irange(elements.size())) {
+      if (hasCUDATensor(elements.get(j), maxArrayLen)) {
+        return true;
+      }
+      if (j >= maxArrayLen) {
+        LOG(WARNING) << "list size=" << elements.size()
+                     << " exceeded maxArrayLen=" << maxArrayLen;
+        break;
+      }
+    }
+    return false;
+  } else {
+    return false;
+  }
+}
+
 inline c10::optional<std::string> jsonIValue(
   const c10::IValue& val,
   const size_t maxArrayLen = 4096) {
   if (val.isTensor()) {
-    const auto t = val.toTensor();
+    const auto& t = val.toTensor();
     if (t.has_storage()) {
       auto shape = vectorToString(t.sizes().vec());
       auto dtype = t.dtype().toScalarType();
@@ -199,7 +227,7 @@ void sendOneCall(
     "\"args\":", vectorToString(args),
   "}\x02");
 
-  int ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
+  auto ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
   if (ret < 0) {
     LOG(WARNING) << "Failed to send torch call to simulator: " << strerror(errno);
   }
@@ -251,22 +279,31 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
         const auto num_inputs = fn.num_inputs();
         const auto inputs = fn.inputs();
         const auto size_inputs = inputs.size();
-        std::vector<std::string> args;
 
         if (num_inputs > size_inputs) {
           LOG(WARNING) << "RecordFunction " << fn.name()
                       << " expected num_inputs=" << num_inputs
                       << " > inputs.size()=" << size_inputs;
         } else {
+          bool has_cuda_tensor = false;
           for (const auto i : c10::irange(size_inputs - num_inputs, size_inputs)) {
-            const auto arg_json = jsonIValue(inputs[i]);
-            if (arg_json.has_value()) {
-              args.emplace_back(arg_json.value());
+            if (hasCUDATensor(inputs[i])) {
+              has_cuda_tensor = true;
+              break;
             }
           }
-        }
 
-        sendOneCall(tracer->simulator_sock_fd, cur_sim_time, fn_name.c_str(), args);
+          if (has_cuda_tensor) {
+            std::vector<std::string> args;
+            for (const auto i : c10::irange(size_inputs - num_inputs, size_inputs)) {
+              const auto arg_json = jsonIValue(inputs[i]);
+              if (arg_json.has_value()) {
+                args.emplace_back(arg_json.value());
+              }
+            }
+            sendOneCall(tracer->simulator_sock_fd, cur_sim_time, fn_name.c_str(), args);
+          }
+        }
       }
 
       auto end_time = current_time_us();
@@ -367,6 +404,4 @@ void disableFunctionTracer() {
   }
 }
 
-} // namespace impl
-} // namespace profiler
-} // namespace torch
+} // namespace torch::profiler::impl
