@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <dlfcn.h>
+#include <time.h>
 #endif
 
 #include <chrono>
@@ -234,9 +235,9 @@ void sendOneCall(
 }
 
 static inline long current_time_us() {
-  auto now = std::chrono::system_clock::now().time_since_epoch();
-  auto cur_time = std::chrono::duration_cast<std::chrono::microseconds>(now);
-  return cur_time.count();
+  struct timespec ts;
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+  return ts.tv_sec * 1000000L + ts.tv_nsec / 1000L;
 }
 
 struct TORCH_API FunctionTracer {
@@ -246,6 +247,7 @@ struct TORCH_API FunctionTracer {
   std::vector<bool> call_stack{};
   void* cudalib_handle{nullptr}; // The preloaded library
   long (*get_time_offset)(){nullptr};
+  double (*get_time_double)(){nullptr};
   void (*subtract_time)(long){nullptr};
 
   FunctionTracer() = default;
@@ -260,7 +262,11 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
       const std::lock_guard<std::mutex> lock(tracer->g_mutex);
 
       auto start_time = current_time_us();
-      auto cur_sim_time = start_time + tracer->get_time_offset();
+      long cur_sim_time;
+      
+      if (tracer->get_time_double != nullptr) {
+        cur_sim_time = (long)(tracer->get_time_double() * 1e6);
+      }
 
       auto fn_name = std::string(fn.name());
 
@@ -367,6 +373,13 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
       tracer->get_time_offset = (long (*)())get_time_offset;
     }
 
+    auto get_time_double = dlsym(cudalib_handle, "get_time_double");
+    if (get_time_double == nullptr) {
+      LOG(WARNING) << "Failed to find get_time_double in libcuda.so.1: " << dlerror();
+    } else {
+      tracer->get_time_double = (double (*)())get_time_double;
+    }
+
     auto subtract_time = dlsym(cudalib_handle, "subtract_time");
     if (subtract_time == nullptr) {
       LOG(WARNING) << "Failed to find subtract_time in libcuda.so.1: " << dlerror();
@@ -381,11 +394,17 @@ void disableFunctionTracer() {
   if (tracer != nullptr) {
     static char HOSTNAME_BUF[256];
     gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
+    
+    long cur_sim_time;
+    if (tracer->get_time_double != nullptr) {
+      cur_sim_time = (long)(tracer->get_time_double() * 1e6);
+    } 
+    
     auto info = concat("{",
       "\"pid\":", getpid(), ",",
       "\"tid\":", gettid(), ",",
       "\"hostname\":", "\"", HOSTNAME_BUF, "\",",
-      "\"cur\":", current_time_us() + tracer->get_time_offset(),
+      "\"cur\":", cur_sim_time,
     "}\x03");
 
     auto ret = send(tracer->simulator_sock_fd, info.c_str(), info.size(), 0);
