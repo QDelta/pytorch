@@ -234,7 +234,7 @@ void sendOneCall(
   }
 }
 
-static inline long current_time_us() {
+static inline long current_cpu_time_us() {
   struct timespec ts;
   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
   return ts.tv_sec * 1000000L + ts.tv_nsec / 1000L;
@@ -246,9 +246,8 @@ struct TORCH_API FunctionTracer {
   CallbackHandle cb_handle{INVALID_CALLBACK_HANDLE};
   std::vector<bool> call_stack{};
   void* cudalib_handle{nullptr}; // The preloaded library
-  long (*get_time_offset)(){nullptr};
-  double (*get_time_double)(){nullptr};
-  void (*subtract_time)(long){nullptr};
+  long (*get_time_long)(){nullptr};
+  void (*subtract_cpu_time)(long){nullptr};
 
   FunctionTracer() = default;
 };
@@ -261,12 +260,8 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
     try {
       const std::lock_guard<std::mutex> lock(tracer->g_mutex);
 
-      auto start_time = current_time_us();
-      long cur_sim_time;
-      
-      if (tracer->get_time_double != nullptr) {
-        cur_sim_time = (long)(tracer->get_time_double() * 1e6);
-      }
+      auto start_time = current_cpu_time_us();
+      long cur_sim_time = tracer->get_time_long();
 
       auto fn_name = std::string(fn.name());
 
@@ -312,8 +307,8 @@ std::unique_ptr<ObserverContext> tracerOnFunctionEnter(const RecordFunction& fn)
         }
       }
 
-      auto end_time = current_time_us();
-      tracer->subtract_time(end_time - start_time);
+      auto end_time = current_cpu_time_us();
+      tracer->subtract_cpu_time(end_time - start_time);
     } catch (const std::exception& e) {
       LOG(WARNING) << "Exception in function tracer (enter): " << e.what();
     }
@@ -366,25 +361,18 @@ void enableFunctionTracer(const std::string& simulator_sock_path) {
   } else {
     tracer->cudalib_handle = cudalib_handle;
 
-    auto get_time_offset = dlsym(cudalib_handle, "get_time_offset");
-    if (get_time_offset == nullptr) {
-      LOG(WARNING) << "Failed to find get_time_offset in libcuda.so.1: " << dlerror();
+    auto get_time_long = dlsym(cudalib_handle, "get_time_long");
+    if (get_time_long == nullptr) {
+      LOG(WARNING) << "Failed to find get_time_long in libcuda.so.1: " << dlerror();
     } else {
-      tracer->get_time_offset = (long (*)())get_time_offset;
+      tracer->get_time_long = (long (*)())get_time_long;
     }
 
-    auto get_time_double = dlsym(cudalib_handle, "get_time_double");
-    if (get_time_double == nullptr) {
-      LOG(WARNING) << "Failed to find get_time_double in libcuda.so.1: " << dlerror();
+    auto subtract_cpu_time = dlsym(cudalib_handle, "subtract_cpu_time");
+    if (subtract_cpu_time == nullptr) {
+      LOG(WARNING) << "Failed to find subtract_cpu_time in libcuda.so.1: " << dlerror();
     } else {
-      tracer->get_time_double = (double (*)())get_time_double;
-    }
-
-    auto subtract_time = dlsym(cudalib_handle, "subtract_time");
-    if (subtract_time == nullptr) {
-      LOG(WARNING) << "Failed to find subtract_time in libcuda.so.1: " << dlerror();
-    } else {
-      tracer->subtract_time = (void (*)(long))subtract_time;
+      tracer->subtract_cpu_time = (void (*)(long))subtract_cpu_time;
     }
   }
 }
@@ -395,10 +383,7 @@ void disableFunctionTracer() {
     static char HOSTNAME_BUF[256];
     gethostname(HOSTNAME_BUF, sizeof(HOSTNAME_BUF));
     
-    long cur_sim_time;
-    if (tracer->get_time_double != nullptr) {
-      cur_sim_time = (long)(tracer->get_time_double() * 1e6);
-    } 
+    long cur_sim_time = tracer->get_time_long();
     
     auto info = concat("{",
       "\"pid\":", getpid(), ",",
