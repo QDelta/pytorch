@@ -127,6 +127,9 @@ class _StorageBase:
     def _share_filename_cpu_(self, *args, **kwargs):
         raise NotImplementedError
 
+    def _share_filename_cpu_aggressive_(self, *args, **kwargs):
+        raise NotImplementedError
+
     def _share_fd_cpu_(self, *args, **kwargs):
         raise NotImplementedError
 
@@ -398,6 +401,13 @@ class _StorageBase:
             self._share_fd_cpu_()
         return self
 
+    def share_memory_aggressive_(self, id):
+        if self.device.type in ["cuda", torch._C._get_privateuse1_backend_name()]:
+            pass  # CUDA or PrivateUse1 doesn't use POSIX shared memory
+        else:
+            self._share_filename_cpu_aggressive_(id)
+        return self
+
     @classmethod
     def _new_shared(cls, size, *, device="cpu"):
         """Create a new storage in shared memory with the same data type."""
@@ -518,12 +528,20 @@ class UntypedStorage(torch._C.StorageBase, _StorageBase):
         return super().share_memory_(*args, **kwargs)
 
     @_share_memory_lock_protected
+    def share_memory_aggressive_(self, *args, **kwargs):
+        return super().share_memory_aggressive_(*args, **kwargs)
+
+    @_share_memory_lock_protected
     def _share_fd_cpu_(self, *args, **kwargs):
         return super()._share_fd_cpu_(*args, **kwargs)
 
     @_share_memory_lock_protected
     def _share_filename_cpu_(self, *args, **kwargs):
         return super()._share_filename_cpu_(*args, **kwargs)
+
+    @_share_memory_lock_protected
+    def _share_filename_cpu_aggressive_(self, *args, **kwargs):
+        return super()._share_filename_cpu_aggressive_(*args, **kwargs)
 
 
 def _load_from_bytes(b):
@@ -1188,6 +1206,10 @@ class TypedStorage:
     # For internal use only, to avoid deprecation warning
     def _share_memory_(self):
         self._untyped_storage.share_memory_()
+        return self
+
+    def _share_memory_aggressive_(self, id):
+        self._untyped_storage.share_memory_aggressive_(id)
         return self
 
     def _new_shared(self, size, *, device=None):
