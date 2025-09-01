@@ -105,7 +105,7 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
             (self.data, self.requires_grad, hooks, state),
         )
 
-    def type(self, dtype, non_blocking=False):
+    def type(self, dtype=None, non_blocking=False):
         if not _enable_aggressive_sharing:
             return super(Parameter, self).type(dtype, non_blocking)
         elif dtype is None:
@@ -119,7 +119,7 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
             else:
                 return self.data.type(dtype, non_blocking=non_blocking)
 
-    # TODO: Also overload Tensor::{type_as,to,half,bfloat16} for
+    # TODO: Also overload Tensor::{type_as,to,half,bfloat16,...} for
     #       aggressive parameter sharing
 
     __torch_function__ = _disabled_torch_function_impl
