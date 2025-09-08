@@ -230,7 +230,11 @@ void sendOneCall(
 
   auto ret = send(simulator_sock_fd, info.c_str(), info.size(), 0);
   if (ret < 0) {
-    LOG(WARNING) << "Failed to send torch call to simulator: " << strerror(errno);
+    if (errno == EMSGSIZE) {
+      LOG(WARNING) << "Very large message " << info.size() << " for \"" << name << "\"";
+    } else {
+      LOG(WARNING) << "Failed to send \"" << name << "\" to simulator: " << strerror(errno);
+    }
   }
 }
 
