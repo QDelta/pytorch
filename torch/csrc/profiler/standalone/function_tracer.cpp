@@ -17,6 +17,7 @@
 #include <ATen/core/function_schema.h>
 #include <ATen/core/stack.h>
 #include <ATen/record_function.h>
+#include <c10/util/Optional.h>
 #include <c10/util/irange.h>
 #include <c10/cuda/CUDAStream.h>
 #include <torch/csrc/profiler/standalone/function_tracer.h>
