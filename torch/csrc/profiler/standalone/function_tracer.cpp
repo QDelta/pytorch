@@ -17,7 +17,7 @@
 #include <ATen/core/function_schema.h>
 #include <ATen/core/stack.h>
 #include <ATen/record_function.h>
-#include <c10/util/Optional.h>
+#include <optional>
 #include <c10/util/irange.h>
 #include <c10/cuda/CUDAStream.h>
 #include <torch/csrc/profiler/standalone/function_tracer.h>
@@ -96,7 +96,7 @@ inline bool hasCUDATensor(const c10::IValue& val, const size_t maxArrayLen = 409
   }
 }
 
-inline c10::optional<std::string> jsonIValue(
+inline std::optional<std::string> jsonIValue(
   const c10::IValue& val,
   const size_t maxArrayLen = 4096) {
   if (val.isTensor()) {
@@ -112,7 +112,7 @@ inline c10::optional<std::string> jsonIValue(
         "\"device\":", "\"", device, "\"",
       "}");
     } else {
-      return c10::nullopt;
+      return std::nullopt;
     }
   } else if (val.isTuple()) {
     std::vector<std::string> element_jsons;
@@ -191,7 +191,7 @@ inline c10::optional<std::string> jsonIValue(
       "\"value\":", "\"", deviceStr(val.toDevice()), "\"",
     "}");
   }
-  return c10::nullopt;
+  return std::nullopt;
 }
 
 inline std::string jsonStream(cudaStream_t stream) {
